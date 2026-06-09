@@ -23,3 +23,7 @@ void imu_hal_tick(void) {
 }
 
 uint8_t imu_hal_rotation_quadrant(void) { return 0; }
+
+void imu_hal_print_debug(void) {
+    Serial.println("IMU: rotation disabled on this board");
+}
