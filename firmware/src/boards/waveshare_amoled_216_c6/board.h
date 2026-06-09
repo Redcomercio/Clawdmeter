@@ -51,9 +51,14 @@
 #define BTN_BACK_GPIO        9
 #define BTN_FWD_GPIO         10
 
+// ---- Rotation offset ----
+// Physical mounting has the panel rotated 270° CW from the IMU's 0° reference.
+// Applied as (imu_quadrant + BOARD_ROTATION_OFFSET) % 4 in imu_hal_rotation_quadrant().
+#define BOARD_ROTATION_OFFSET 3
+
 // ---- Capability flags ----
 #define BOARD_HAS_SECONDARY_BUTTON 1
-#define BOARD_HAS_ROTATION         0    // C6 has no PSRAM headroom for the rotation strip
+#define BOARD_HAS_ROTATION         1    // rotation strip fits in internal SRAM (37 KB)
 #define BOARD_HAS_IMU              1    // present + initialized for I2C bus health
 #define BOARD_HAS_BATTERY          1
 #define BOARD_HAS_IO_EXPANDER      0    // TCA9554 exists on board but only services audio
