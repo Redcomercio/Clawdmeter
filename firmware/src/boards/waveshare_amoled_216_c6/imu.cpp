@@ -19,7 +19,7 @@ static uint8_t accel_to_rotation(float ax, float ay) {
     float abs_ax = fabsf(ax);
     float abs_ay = fabsf(ay);
     if (abs_ax < TILT_THRESHOLD && abs_ay < TILT_THRESHOLD) return 255;
-    if (abs_ay > abs_ax) return (ay > 0) ? 3 : 1;
+    if (abs_ay > abs_ax) return (ay > 0) ? 1 : 3;  // Y invertido para corregir montaje
     return (ax > 0) ? 0 : 2;
 }
 
