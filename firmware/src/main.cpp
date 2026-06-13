@@ -115,6 +115,21 @@ static bool parse_json(const char* json, UsageData* out) {
     return true;
 }
 
+static SessionEvent session_event = {};
+
+// Parse an event payload (has an "ev" key). Returns true if handled.
+static bool parse_event_json(const char* json, SessionEvent* out) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, json);
+    if (err) return false;
+    if (!doc["ev"].is<const char*>()) return false;
+    strlcpy(out->type, doc["ev"] | "", sizeof(out->type));
+    strlcpy(out->proj, doc["proj"] | "", sizeof(out->proj));
+    out->count = doc["n"] | 1;
+    out->fresh = true;
+    return true;
+}
+
 // ---- Serial command buffer ----
 #define CMD_BUF_SIZE 64
 static char cmd_buf[CMD_BUF_SIZE];
@@ -359,7 +374,15 @@ void loop() {
     check_serial_cmd();
 
     if (ble_has_data()) {
-        if (parse_json(ble_get_data(), &usage)) {
+        const char* raw = ble_get_data();
+        if (strstr(raw, "\"ev\"") != nullptr) {
+            if (parse_event_json(raw, &session_event)) {
+                ui_show_event(&session_event);
+                ble_send_ack();
+            } else {
+                ble_send_nack();
+            }
+        } else if (parse_json(raw, &usage)) {
             int g_before = usage_rate_group();
             usage_rate_sample(usage.session_pct);
             int g_after = usage_rate_group();

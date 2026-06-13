@@ -10,3 +10,10 @@ struct UsageData {
     bool ok;                 // data parse succeeded
     bool valid;              // false until first successful parse
 };
+
+struct SessionEvent {
+    char type[12];   // "approval" | "done" | "clear"
+    char proj[24];   // project name, truncated
+    uint8_t count;   // pending approvals (>=1 for "approval")
+    bool fresh;      // set when a new event arrives, cleared by the UI
+};
