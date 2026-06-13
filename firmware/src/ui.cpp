@@ -395,6 +395,43 @@ static uint8_t   card_quadrant = 0;    // rotation quadrant frozen at show time
 // QA on hardware: if approve/continue feel swapped, flip this predicate.
 static bool primary_is_upper(uint8_t q) { return !(q == 2); }
 
+// ---- Decision confirmation flash (full-screen colour + word, ~1.5s) ----
+static lv_obj_t* confirm = nullptr;
+static lv_obj_t* confirm_lbl = nullptr;
+static uint32_t  confirm_hide_at = 0;
+
+static void confirm_ensure(void) {
+    if (confirm) return;
+    const BoardCaps& c = board_caps();
+    confirm = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(confirm, c.width, c.height);
+    lv_obj_align(confirm, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(confirm, 0, 0);
+    lv_obj_set_style_border_width(confirm, 0, 0);
+    lv_obj_clear_flag(confirm, LV_OBJ_FLAG_SCROLLABLE);
+    confirm_lbl = lv_label_create(confirm);
+    lv_obj_set_style_text_font(confirm_lbl, &font_styrene_48, 0);
+    lv_obj_center(confirm_lbl);
+    lv_obj_add_flag(confirm, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void confirm_flash(const char* decision) {
+    confirm_ensure();
+    if (strcmp(decision, "approve") == 0) {
+        lv_obj_set_style_bg_color(confirm, lv_color_hex(0x1E7B34), 0);   // green
+        lv_obj_set_style_text_color(confirm_lbl, lv_color_white(), 0);
+        lv_label_set_text(confirm_lbl, LV_SYMBOL_OK "  Aprobado");
+    } else {
+        lv_obj_set_style_bg_color(confirm, lv_color_hex(0xD9A521), 0);   // yellow
+        lv_obj_set_style_text_color(confirm_lbl, lv_color_hex(0x202028), 0);
+        lv_label_set_text(confirm_lbl, "Terminal");
+    }
+    lv_obj_center(confirm_lbl);
+    lv_obj_move_foreground(confirm);
+    lv_obj_clear_flag(confirm, LV_OBJ_FLAG_HIDDEN);
+    confirm_hide_at = lv_tick_get() + 1500;
+}
+
 static void card_finish(const char* decision) {
     if (card) lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
     card_hide_at = 0;
@@ -405,58 +442,64 @@ static void card_finish(const char* decision) {
         card_id[0] = '\0';
     }
     splash_unpin_anim();
+    confirm_flash(decision);        // visual confirmation of what was pressed
 }
 
 static void card_ensure(void) {
     if (card) return;
     const BoardCaps& c = board_caps();
     card = lv_obj_create(lv_layer_top());
-    // Large card optimized for the 480x480 square panel, inside the rounded margin.
-    lv_obj_set_size(card, c.width - 48, c.height - 80);
+    // Near-full-screen square card for the small 2.16" 480x480 panel — big text.
+    lv_obj_set_size(card, c.width - 16, c.height - 16);
     lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_radius(card, 18, 0);
+    lv_obj_set_style_radius(card, 22, 0);
     lv_obj_set_style_border_width(card, 0, 0);
     lv_obj_set_style_bg_color(card, lv_color_hex(0x202028), 0);
-    lv_obj_set_style_pad_all(card, 18, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Top label = Aprobar (upper button). Green to read as "go".
+    // Action labels live on the RIGHT edge, aligned to the two outer physical
+    // buttons (upper third = upper button, lower third = lower button; the
+    // middle button sits between them). Upper = Continuar (approve), lower =
+    // Terminal (defer to the terminal).
     lv_obj_t* top = lv_label_create(card);
-    lv_obj_set_style_text_font(top, &font_styrene_24, 0);
+    lv_obj_set_style_text_font(top, &font_styrene_28, 0);
     lv_obj_set_style_text_color(top, lv_color_hex(0x35c46a), 0);
-    lv_label_set_text(top, LV_SYMBOL_UP "  Aprobar");
-    lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 0);
+    lv_label_set_text(top, "Continuar  " LV_SYMBOL_RIGHT);
+    lv_obj_align(top, LV_ALIGN_RIGHT_MID, 0, -120);
+
+    lv_obj_t* bot = lv_label_create(card);
+    lv_obj_set_style_text_font(bot, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(bot, lv_color_hex(0x9a9aa2), 0);
+    lv_label_set_text(bot, "Terminal  " LV_SYMBOL_RIGHT);
+    lv_obj_align(bot, LV_ALIGN_RIGHT_MID, 0, 120);
+
+    // Content (project / tool / command) fills the left, clear of the buttons.
+    int32_t content_w = c.width - 72;
 
     card_proj = lv_label_create(card);
-    lv_obj_set_style_text_font(card_proj, &font_styrene_28, 0);
+    lv_obj_set_style_text_font(card_proj, &font_styrene_48, 0);
     lv_obj_set_style_text_color(card_proj, lv_color_white(), 0);
     lv_label_set_long_mode(card_proj, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(card_proj, c.width - 96);
-    lv_obj_align(card_proj, LV_ALIGN_LEFT_MID, 0, -34);
+    lv_obj_set_width(card_proj, content_w);
+    lv_obj_align(card_proj, LV_ALIGN_LEFT_MID, 0, -40);
 
     card_tool = lv_label_create(card);
-    lv_obj_set_style_text_font(card_tool, &font_styrene_24, 0);
+    lv_obj_set_style_text_font(card_tool, &font_styrene_28, 0);
     lv_obj_set_style_text_color(card_tool, lv_color_hex(0xB8860B), 0);
-    lv_obj_align(card_tool, LV_ALIGN_LEFT_MID, 0, 4);
+    lv_obj_align(card_tool, LV_ALIGN_LEFT_MID, 0, 12);
 
     card_cmd = lv_label_create(card);
-    lv_obj_set_style_text_font(card_cmd, &font_styrene_20, 0);
+    lv_obj_set_style_text_font(card_cmd, &font_styrene_24, 0);
     lv_obj_set_style_text_color(card_cmd, lv_color_hex(0xcfcfd6), 0);
-    lv_label_set_long_mode(card_cmd, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(card_cmd, c.width - 96);
-    lv_obj_align(card_cmd, LV_ALIGN_LEFT_MID, 0, 40);
-
-    // Bottom label = Continuar (lower button → terminal).
-    lv_obj_t* bot = lv_label_create(card);
-    lv_obj_set_style_text_font(bot, &font_styrene_24, 0);
-    lv_obj_set_style_text_color(bot, lv_color_hex(0x9a9aa2), 0);
-    lv_label_set_text(bot, LV_SYMBOL_DOWN "  Continuar en terminal");
-    lv_obj_align(bot, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_label_set_long_mode(card_cmd, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(card_cmd, content_w);
+    lv_obj_align(card_cmd, LV_ALIGN_LEFT_MID, 0, 52);
 
     card_pos = lv_label_create(card);
     lv_obj_set_style_text_font(card_pos, &font_styrene_16, 0);
     lv_obj_set_style_text_color(card_pos, lv_color_hex(0x9a9aa2), 0);
-    lv_obj_align(card_pos, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_align(card_pos, LV_ALIGN_TOP_LEFT, 0, 4);
 
     lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
 }
@@ -497,6 +540,10 @@ void ui_approval_secondary(void) {
 void ui_approval_tick(void) {
     if (card_hide_at != 0 && lv_tick_get() >= card_hide_at) {
         card_finish("dismiss");
+    }
+    if (confirm_hide_at != 0 && lv_tick_get() >= confirm_hide_at) {
+        if (confirm) lv_obj_add_flag(confirm, LV_OBJ_FLAG_HIDDEN);
+        confirm_hide_at = 0;
     }
 }
 
