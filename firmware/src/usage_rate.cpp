@@ -28,6 +28,7 @@ struct Sample { uint32_t ms; float pct; };
 static Sample ring[RING_SIZE];
 static uint8_t count = 0;
 static uint8_t head  = 0;  // index of next write slot
+static float   last_pct = 0.0f;  // most recent absolute session level
 
 static inline uint8_t oldest_idx(void) {
     return (head + RING_SIZE - count) % RING_SIZE;
@@ -52,6 +53,7 @@ void usage_rate_sample(float session_pct) {
     ring[head] = { now, session_pct };
     head = (head + 1) % RING_SIZE;
     if (count < RING_SIZE) count++;
+    last_pct = session_pct;
 }
 
 int usage_rate_group(void) {
@@ -70,4 +72,31 @@ int usage_rate_group(void) {
     if (rate < RATE_THRESH_ACTIVE) return 1;
     if (rate < RATE_THRESH_HEAVY)  return 2;
     return 3;
+}
+
+// Absolute-level fatigue thresholds (session %). Clawdio's optimum is ~30% —
+// he loves working — and he's wiped out past 80%.
+#define MOOD_WAKING_MAX   12.0f   // < 12%  : just warming up
+#define MOOD_ZONE_MAX     45.0f   // 12–45% : in the zone (peak ~30%)
+#define MOOD_BUSY_MAX     65.0f   // 45–65% : working hard
+#define MOOD_TIRING_MAX   80.0f   // 65–80% : tiring; >= 80% exhausted
+
+int clawdio_mood_group(void) {
+    // Base mood from the absolute session level (the fatigue curve).
+    int tier;
+    if      (last_pct < MOOD_WAKING_MAX) tier = 0;  // waking
+    else if (last_pct < MOOD_ZONE_MAX)   tier = 1;  // in the zone (peak)
+    else if (last_pct < MOOD_BUSY_MAX)   tier = 2;  // busy
+    else if (last_pct < MOOD_TIRING_MAX) tier = 3;  // tiring
+    else                                 tier = 4;  // exhausted
+
+    // Rate modulation — only while not yet exhausted (past 80% nothing perks
+    // him up). Working hard right now energizes him one notch toward his happy
+    // working zone; coasting in the sweet spot lets him relax a little.
+    if (tier < 4) {
+        int rate = usage_rate_group();  // 0 idle · 1 normal · 2 active · 3 heavy
+        if (rate >= 2 && (tier == 2 || tier == 3)) tier = 1;  // grinding happily
+        else if (rate == 0 && tier == 1)           tier = 0;  // sweet spot but idle
+    }
+    return tier;
 }

@@ -26,3 +26,16 @@ bool splash_is_active(void);
 
 // Root container (so ui.cpp can attach a click event).
 lv_obj_t* splash_get_root(void);
+
+// Size in px of one pixel-art cell (so other widgets can match the 8-bit
+// grid). Valid after splash_init(); returns 0 before.
+int splash_cell_px(void);
+
+// Pin the creature to a specific animation by name (e.g. "expression
+// surprise"), overriding rate-driven rotation, until splash_unpin_anim().
+// Used to reflect a state (e.g. approval pending) in the creature itself.
+// No-op if the name isn't in the catalog.
+void splash_pin_anim(const char* name);
+
+// Release the pin and resume normal rate-driven rotation.
+void splash_unpin_anim(void);

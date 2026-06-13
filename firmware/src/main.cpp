@@ -384,11 +384,11 @@ void loop() {
                 ble_send_nack();
             }
         } else if (parse_json(raw, &usage)) {
-            int g_before = usage_rate_group();
+            int g_before = clawdio_mood_group();
             usage_rate_sample(usage.session_pct);
-            int g_after = usage_rate_group();
+            int g_after = clawdio_mood_group();
             if (g_after != g_before) {
-                Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
+                Serial.printf("clawdio mood: group %d -> %d (s=%.2f%%)\n",
                     g_before, g_after, usage.session_pct);
                 if (splash_is_active()) splash_pick_for_current_rate();
             }

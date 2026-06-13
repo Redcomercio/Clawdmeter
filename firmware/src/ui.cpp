@@ -158,6 +158,96 @@ static void banner_ensure(void) {
     lv_obj_center(banner_lbl);
 }
 
+// ---- Speech cloud over the splash creature (approval-pending only) ----
+// A puffy white "nube" with an amber "!" that appears above the creature on
+// the splash screen, as if it were trying to get your attention. Coexists
+// with the banner. Lives on the top layer; visibility is gated on both an
+// active approval AND the splash screen being current.
+static lv_obj_t* cloud = nullptr;
+static bool      approval_on = false;
+
+// Pixel-art speech bubble, drawn block-by-block to match Clawdio's 8-bit look.
+// Legend:  K = dark outline   # = white fill   s = soft shadow
+//          ! = amber exclamation   . = transparent
+// Each char is one CELL×CELL square (CELL = splash_cell_px()), sharp corners.
+// Rectangular bubble with a thick outline and a tail trailing toward Clawdio
+// (lower-left, since the bubble sits upper-right of the centered creature).
+static const char* const CLOUD_ART[] = {
+    ".KKKKKKKKKKK.",
+    "K###########K",
+    "K####!#####sK",
+    "K####!#####sK",
+    "K####!#####sK",
+    "K##########sK",
+    "K####!#####sK",
+    "K#########ssK",
+    ".KKK#KKKKKKK.",
+    "..KK#K.......",
+    "...KK........",
+};
+#define CLOUD_ROWS 11
+#define CLOUD_COLS 13
+
+#define CLOUD_OUTLINE 0x14142b   // dark navy outline
+#define CLOUD_SHADOW  0xcdcde8   // soft lavender inner shadow
+#define CLOUD_AMBER   0xB8860B   // exclamation
+
+static void cloud_block(lv_obj_t* parent, int x, int y, int s, uint32_t hex) {
+    lv_obj_t* b = lv_obj_create(parent);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_size(b, s, s);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_set_style_radius(b, 0, 0);          // sharp, 8-bit corners
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(hex), 0);
+}
+
+static void cloud_ensure(void) {
+    if (cloud) return;
+    int s = splash_cell_px();
+    if (s <= 0) s = 10;  // splash not yet initialized; fall back to C6 cell
+
+    cloud = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(cloud);
+    lv_obj_set_size(cloud, CLOUD_COLS * s, CLOUD_ROWS * s);
+    lv_obj_clear_flag(cloud, LV_OBJ_FLAG_SCROLLABLE);
+    // Upper-right of the centered creature, clear of the top banner.
+    lv_obj_align(cloud, LV_ALIGN_CENTER, 78, -96);
+
+    for (int r = 0; r < CLOUD_ROWS; r++) {
+        for (int col = 0; col < CLOUD_COLS; col++) {
+            switch (CLOUD_ART[r][col]) {
+            case 'K': cloud_block(cloud, col * s, r * s, s, CLOUD_OUTLINE); break;
+            case '#': cloud_block(cloud, col * s, r * s, s, 0xFFFFFF);      break;
+            case 's': cloud_block(cloud, col * s, r * s, s, CLOUD_SHADOW);  break;
+            case '!': cloud_block(cloud, col * s, r * s, s, CLOUD_AMBER);   break;
+            default: break;  // '.' transparent
+            }
+        }
+    }
+
+    lv_obj_add_flag(cloud, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Reflect the approval state in the splash creature: pin it to a surprised
+// animation while pending, release it otherwise. Independent of which screen
+// is showing — the creature only renders on splash, but the pin must persist
+// so it's already surprised if the user switches back to splash.
+static void cloud_update_creature(void) {
+    if (approval_on) splash_pin_anim("expression surprise");
+    else             splash_unpin_anim();
+}
+
+// Show the cloud only while an approval is pending AND the splash is current.
+static void cloud_update_visibility(void) {
+    cloud_update_creature();
+    if (!cloud) return;
+    if (approval_on && current_screen == SCREEN_SPLASH)
+        lv_obj_clear_flag(cloud, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_add_flag(cloud, LV_OBJ_FLAG_HIDDEN);
+}
+
 // Animation state
 static uint32_t anim_last_ms = 0;
 static uint8_t anim_spinner_idx = 0;
@@ -233,11 +323,14 @@ static void format_reset_time(int mins, char* buf, size_t len) {
 void ui_show_event(const SessionEvent* ev) {
     if (!ev) return;
     banner_ensure();
+    cloud_ensure();
     char text[48];
 
     if (strcmp(ev->type, "clear") == 0) {
         lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
         banner_hide_at = 0;
+        approval_on = false;
+        cloud_update_visibility();
         return;
     }
 
@@ -252,6 +345,8 @@ void ui_show_event(const SessionEvent* ev) {
         lv_label_set_text(banner_lbl, text);
         lv_obj_clear_flag(banner, LV_OBJ_FLAG_HIDDEN);
         banner_hide_at = 0;  // persists until daemon clears it
+        approval_on = true;
+        cloud_update_visibility();
         return;
     }
 
@@ -261,6 +356,8 @@ void ui_show_event(const SessionEvent* ev) {
         lv_label_set_text(banner_lbl, text);
         lv_obj_clear_flag(banner, LV_OBJ_FLAG_HIDDEN);
         banner_hide_at = lv_tick_get() + 30000;  // auto-dismiss in 30s
+        approval_on = false;  // nothing pending when a done payload arrives
+        cloud_update_visibility();
         return;
     }
 }
@@ -556,6 +653,7 @@ void ui_show_screen(screen_t screen) {
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
     apply_battery_visibility();
+    cloud_update_visibility();
 }
 
 void ui_toggle_splash(void) {

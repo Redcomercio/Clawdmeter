@@ -26,6 +26,7 @@ static lv_obj_t *label_status = NULL;     // shown only when no animations loade
 static uint16_t *canvas_buf = NULL;        // 480x480 RGB565 (PSRAM)
 
 static uint16_t cur_anim = 0;
+static int      pinned_anim = -1;   // >=0 locks the creature to this animation
 static uint16_t cur_frame = 0;
 static uint32_t frame_started_ms = 0;
 static uint32_t last_pick_ms = 0;
@@ -35,23 +36,27 @@ static bool active = false;
 // rate-driven group every this many ms.
 #define SPLASH_ROTATE_INTERVAL_MS 20000
 
-// Usage-rate animation groups: 4 groups × up to 4 animations each.
+// Clawdio mood groups: 5 tiers × up to 4 animations each, indexed by
+// clawdio_mood_group() (absolute usage level + work rate). His optimum is
+// ~30% — he loves working — and he's exhausted past 80%.
 // Filled at init by matching literal names from splash_anims[].
-#define GROUP_COUNT 4
+#define GROUP_COUNT 5
 #define GROUP_MAX   4
 static int8_t  group_lists[GROUP_COUNT][GROUP_MAX];
 static uint8_t group_size[GROUP_COUNT] = {0};
 static uint8_t group_rotation[GROUP_COUNT] = {0};
 
 static const char* GROUP_NAMES[GROUP_COUNT][GROUP_MAX] = {
-    // Group 0 — idle / sleepy
-    { "expression sleep", "idle breathe", "idle blink", "expression wink" },
-    // Group 1 — normal pace
-    { "idle look around", "work think", "work coding", NULL },
-    // Group 2 — active
-    { "dance sway", "expression surprise", "dance bounce", NULL },
-    // Group 3 — heavy
-    { "dance bounce dj", "dance sway dj", "dance djmix", NULL },
+    // Tier 0 — waking: calm, not much to do yet
+    { "idle breathe", "idle blink", "idle look around", NULL },
+    // Tier 1 — in the zone (peak ~30%): happy, loves working, energetic
+    { "work coding", "work think", "dance sway", "expression wink" },
+    // Tier 2 — busy: focused, working hard
+    { "work coding", "work think", "idle look around", NULL },
+    // Tier 3 — tiring: wearing down
+    { "idle breathe", "idle blink", "expression wink", NULL },
+    // Tier 4 — exhausted (>80%): very, very tired
+    { "expression sleep", NULL, NULL, NULL },
 };
 
 static void resolve_group_lists(void) {
@@ -168,8 +173,9 @@ void splash_init(lv_obj_t *parent) {
 void splash_tick(void) {
     if (!active || SPLASH_ANIM_COUNT == 0) return;
 
-    // Auto-rotate to the next animation in the current group.
-    if (millis() - last_pick_ms >= SPLASH_ROTATE_INTERVAL_MS) {
+    // Auto-rotate to the next animation in the current group — unless the
+    // creature is pinned to a state animation (e.g. approval pending).
+    if (pinned_anim < 0 && millis() - last_pick_ms >= SPLASH_ROTATE_INTERVAL_MS) {
         splash_pick_for_current_rate();
     }
 
@@ -197,7 +203,17 @@ void splash_next(void) {
 
 void splash_pick_for_current_rate(void) {
     if (SPLASH_ANIM_COUNT == 0) return;
-    int g = usage_rate_group();
+    // While pinned, always show the pinned animation (so splash_show and any
+    // re-pick keep reflecting the active state instead of rotating away).
+    if (pinned_anim >= 0) {
+        cur_anim = (uint16_t)pinned_anim;
+        cur_frame = 0;
+        frame_started_ms = millis();
+        last_pick_ms = frame_started_ms;
+        render_frame(splash_anims[cur_anim].frames[0], splash_anims[cur_anim].palette);
+        return;
+    }
+    int g = clawdio_mood_group();
     if (g < 0 || g >= GROUP_COUNT) g = 0;
     if (group_size[g] == 0) return;
 
@@ -229,4 +245,30 @@ void splash_hide(void) {
 
 lv_obj_t* splash_get_root(void) {
     return splash_container;
+}
+
+int splash_cell_px(void) {
+    return cell;
+}
+
+void splash_pin_anim(const char* name) {
+    if (!name || SPLASH_ANIM_COUNT == 0) return;
+    for (int i = 0; i < SPLASH_ANIM_COUNT; i++) {
+        if (strcmp(splash_anims[i].name, name) == 0) {
+            pinned_anim = i;
+            cur_anim = (uint16_t)i;
+            cur_frame = 0;
+            frame_started_ms = millis();
+            last_pick_ms = frame_started_ms;
+            if (active) render_frame(splash_anims[i].frames[0], splash_anims[i].palette);
+            Serial.printf("splash: pinned -> %s\n", name);
+            return;
+        }
+    }
+}
+
+void splash_unpin_anim(void) {
+    if (pinned_anim < 0) return;
+    pinned_anim = -1;
+    if (active) splash_pick_for_current_rate();  // resume normal rotation
 }
