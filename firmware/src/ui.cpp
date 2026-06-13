@@ -5,6 +5,7 @@
 #include "logo.h"
 #include "icons.h"
 #include "hal/board_caps.h"
+#include "hal/imu_hal.h"
 
 // Custom fonts (scaled for 314 PPI, ~1.9x from original 165 PPI)
 LV_FONT_DECLARE(font_tiempos_56);
@@ -370,22 +371,35 @@ void ui_banner_tick(void) {
     }
 }
 
-// ---- Swipe-to-approve card (overlays any screen; commits a BLE decision) ----
-// Sized for the 480x480 square AMOLED: a large centered card with big text and
-// a full-width drag area. Right swipe = approve, left swipe = dismiss (terminal).
+// ---- Approval card (overlays any screen; decided with the physical buttons) ----
+// Sized for the 480x480 square AMOLED. The screen auto-rotates upright, so the
+// physically-upper action button = "Aprobar" (top label) and the lower one =
+// "Continuar" (bottom label, defers to the terminal). Rotation is FROZEN while
+// the card is up so the button↔label mapping can't shift under the user.
+//
+// Which physical button (PRIMARY/BOOT vs SECONDARY/KEY) is the upper one depends
+// on the frozen quadrant. PRIMARY_IS_UPPER() encodes that; tuned on hardware.
 static lv_obj_t* card = nullptr;
 static lv_obj_t* card_proj = nullptr;
 static lv_obj_t* card_tool = nullptr;
 static lv_obj_t* card_cmd  = nullptr;
 static lv_obj_t* card_pos  = nullptr;
 static char      card_id[40] = {0};
-static int32_t   card_drag_start_x = 0;
-static int32_t   card_drag_dx = 0;
-static uint32_t  card_hide_at = 0;   // lv_tick when the 30s timeout fires
+static uint32_t  card_hide_at = 0;     // lv_tick when the 30s timeout fires
+static bool      card_visible = false;
+static uint8_t   card_quadrant = 0;    // rotation quadrant frozen at show time
+
+// At quadrant 0 the PRIMARY (BOOT) button is the gravity-upper one; at 180°
+// (quadrant 2) the column flips so SECONDARY is upper. Quadrants 1/3 (buttons
+// horizontal) have no true upper — default to the quadrant-0 assignment.
+// QA on hardware: if approve/continue feel swapped, flip this predicate.
+static bool primary_is_upper(uint8_t q) { return !(q == 2); }
 
 static void card_finish(const char* decision) {
     if (card) lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
     card_hide_at = 0;
+    card_visible = false;
+    imu_hal_lock_rotation(false);   // resume auto-rotation
     if (card_id[0]) {
         ble_send_decision(card_id, decision);
         card_id[0] = '\0';
@@ -393,82 +407,56 @@ static void card_finish(const char* decision) {
     splash_unpin_anim();
 }
 
-static void card_press_cb(lv_event_t* e) {
-    lv_event_code_t code = lv_event_get_code(e);
-    lv_indev_t* indev = lv_indev_get_act();
-    if (!indev) return;
-    lv_point_t p; lv_indev_get_point(indev, &p);
-    const BoardCaps& c = board_caps();
-    int32_t thresh = c.width * 4 / 10;   // ~40% of width commits
-
-    if (code == LV_EVENT_PRESSED) {
-        card_drag_start_x = p.x;
-        card_drag_dx = 0;
-    } else if (code == LV_EVENT_PRESSING) {
-        card_drag_dx = p.x - card_drag_start_x;
-        lv_obj_align(card, LV_ALIGN_CENTER, card_drag_dx, 0);
-        if (card_drag_dx > 0)
-            lv_obj_set_style_bg_color(card, lv_color_hex(0x1E7B34), 0);   // green = approve
-        else if (card_drag_dx < 0)
-            lv_obj_set_style_bg_color(card, lv_color_hex(0x3a3a44), 0);   // dim = dismiss
-        else
-            lv_obj_set_style_bg_color(card, lv_color_hex(0x202028), 0);
-    } else if (code == LV_EVENT_RELEASED) {
-        if (card_drag_dx >= thresh)       card_finish("approve");
-        else if (card_drag_dx <= -thresh) card_finish("dismiss");
-        else {  // spring back
-            lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
-            lv_obj_set_style_bg_color(card, lv_color_hex(0x202028), 0);
-        }
-    }
-}
-
 static void card_ensure(void) {
     if (card) return;
     const BoardCaps& c = board_caps();
     card = lv_obj_create(lv_layer_top());
     // Large card optimized for the 480x480 square panel, inside the rounded margin.
-    lv_obj_set_size(card, c.width - 48, c.height - 120);
+    lv_obj_set_size(card, c.width - 48, c.height - 80);
     lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_radius(card, 18, 0);
     lv_obj_set_style_border_width(card, 0, 0);
     lv_obj_set_style_bg_color(card, lv_color_hex(0x202028), 0);
     lv_obj_set_style_pad_all(card, 18, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(card, card_press_cb, LV_EVENT_PRESSED, nullptr);
-    lv_obj_add_event_cb(card, card_press_cb, LV_EVENT_PRESSING, nullptr);
-    lv_obj_add_event_cb(card, card_press_cb, LV_EVENT_RELEASED, nullptr);
+
+    // Top label = Aprobar (upper button). Green to read as "go".
+    lv_obj_t* top = lv_label_create(card);
+    lv_obj_set_style_text_font(top, &font_styrene_24, 0);
+    lv_obj_set_style_text_color(top, lv_color_hex(0x35c46a), 0);
+    lv_label_set_text(top, LV_SYMBOL_UP "  Aprobar");
+    lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 0);
 
     card_proj = lv_label_create(card);
     lv_obj_set_style_text_font(card_proj, &font_styrene_28, 0);
     lv_obj_set_style_text_color(card_proj, lv_color_white(), 0);
     lv_label_set_long_mode(card_proj, LV_LABEL_LONG_DOT);
     lv_obj_set_width(card_proj, c.width - 96);
-    lv_obj_align(card_proj, LV_ALIGN_TOP_LEFT, 0, 4);
+    lv_obj_align(card_proj, LV_ALIGN_LEFT_MID, 0, -34);
 
     card_tool = lv_label_create(card);
     lv_obj_set_style_text_font(card_tool, &font_styrene_24, 0);
     lv_obj_set_style_text_color(card_tool, lv_color_hex(0xB8860B), 0);
-    lv_obj_align(card_tool, LV_ALIGN_TOP_LEFT, 0, 52);
+    lv_obj_align(card_tool, LV_ALIGN_LEFT_MID, 0, 4);
 
     card_cmd = lv_label_create(card);
     lv_obj_set_style_text_font(card_cmd, &font_styrene_20, 0);
     lv_obj_set_style_text_color(card_cmd, lv_color_hex(0xcfcfd6), 0);
     lv_label_set_long_mode(card_cmd, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(card_cmd, c.width - 96);
-    lv_obj_align(card_cmd, LV_ALIGN_TOP_LEFT, 0, 96);
+    lv_obj_align(card_cmd, LV_ALIGN_LEFT_MID, 0, 40);
 
-    lv_obj_t* hints = lv_label_create(card);
-    lv_obj_set_style_text_font(hints, &font_styrene_20, 0);
-    lv_obj_set_style_text_color(hints, lv_color_hex(0x9a9aa2), 0);
-    lv_label_set_text(hints, LV_SYMBOL_LEFT " terminal      aprobar " LV_SYMBOL_OK);
-    lv_obj_align(hints, LV_ALIGN_BOTTOM_MID, 0, -4);
+    // Bottom label = Continuar (lower button → terminal).
+    lv_obj_t* bot = lv_label_create(card);
+    lv_obj_set_style_text_font(bot, &font_styrene_24, 0);
+    lv_obj_set_style_text_color(bot, lv_color_hex(0x9a9aa2), 0);
+    lv_label_set_text(bot, LV_SYMBOL_DOWN "  Continuar en terminal");
+    lv_obj_align(bot, LV_ALIGN_BOTTOM_MID, 0, 0);
 
     card_pos = lv_label_create(card);
     lv_obj_set_style_text_font(card_pos, &font_styrene_16, 0);
     lv_obj_set_style_text_color(card_pos, lv_color_hex(0x9a9aa2), 0);
-    lv_obj_align(card_pos, LV_ALIGN_TOP_RIGHT, 0, 4);
+    lv_obj_align(card_pos, LV_ALIGN_TOP_RIGHT, 0, 0);
 
     lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
 }
@@ -483,11 +471,27 @@ void ui_show_approval(const ApprovalRequest* req) {
     char pos[16];
     snprintf(pos, sizeof(pos), "%u de %u", (unsigned)req->pos, (unsigned)req->total);
     lv_label_set_text(card_pos, pos);
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x202028), 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_HIDDEN);
     card_hide_at = lv_tick_get() + 30000;  // auto-dismiss in 30s
+    card_visible = true;
+    card_quadrant = imu_hal_rotation_quadrant();
+    imu_hal_lock_rotation(true);            // freeze so buttons don't remap
     splash_pin_anim("expression surprise");
+}
+
+bool ui_approval_active(void) { return card_visible; }
+
+// Physical buttons resolve the card. The upper button approves; the lower one
+// defers to the terminal. Which physical button is upper comes from the frozen
+// quadrant (see primary_is_upper).
+void ui_approval_primary(void) {
+    if (!card_visible) return;
+    card_finish(primary_is_upper(card_quadrant) ? "approve" : "dismiss");
+}
+
+void ui_approval_secondary(void) {
+    if (!card_visible) return;
+    card_finish(primary_is_upper(card_quadrant) ? "dismiss" : "approve");
 }
 
 void ui_approval_tick(void) {

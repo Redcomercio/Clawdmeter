@@ -14,6 +14,7 @@ static uint8_t  candidate_rotation = 0;
 static uint32_t candidate_since    = 0;
 static uint32_t last_poll_ms       = 0;
 static bool     imu_ok             = false;
+static bool     rotation_locked    = false;
 
 static uint8_t accel_to_rotation(float ax, float ay) {
     float abs_ax = fabsf(ax);
@@ -37,8 +38,10 @@ void imu_hal_init(void) {
     imu_ok = true;
 }
 
+void imu_hal_lock_rotation(bool locked) { rotation_locked = locked; }
+
 void imu_hal_tick(void) {
-    if (!imu_ok) return;
+    if (!imu_ok || rotation_locked) return;  // frozen → keep last quadrant
     uint32_t now = millis();
     if (now - last_poll_ms < IMU_POLL_MS) return;
     last_poll_ms = now;

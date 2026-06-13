@@ -334,7 +334,8 @@ void loop() {
         bool primary_now = input_hal_is_held(INPUT_BTN_PRIMARY);
         if (primary_now != primary_was) {
             if (primary_now) {
-                if (idle_consume_wake_press()) primary_wake_swallowed = true;
+                if (ui_approval_active())      { ui_approval_primary(); primary_wake_swallowed = true; }
+                else if (idle_consume_wake_press()) primary_wake_swallowed = true;
                 else                            ble_keyboard_press(0x2C, 0);  // HID Space, no mods
             } else {
                 if (primary_wake_swallowed) primary_wake_swallowed = false;
@@ -349,7 +350,8 @@ void loop() {
             bool secondary_now = input_hal_is_held(INPUT_BTN_SECONDARY);
             if (secondary_now != secondary_was) {
                 if (secondary_now) {
-                    if (idle_consume_wake_press()) secondary_wake_swallowed = true;
+                    if (ui_approval_active())      { ui_approval_secondary(); secondary_wake_swallowed = true; }
+                    else if (idle_consume_wake_press()) secondary_wake_swallowed = true;
                     else                            ble_keyboard_press(0x2B, 0x02);  // HID Tab + LEFT_SHIFT
                 } else {
                     if (secondary_wake_swallowed) secondary_wake_swallowed = false;
