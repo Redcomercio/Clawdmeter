@@ -213,6 +213,38 @@ Add to `~/.claude/settings.json` (merge into any existing `hooks` block):
 Replace `/ABS/PATH/` with the absolute path to your checkout. Restart Claude
 Code so it reloads settings. The daemon picks up events within ~1 second.
 
+## Approve from the device (macOS)
+
+With the daemon connected, a `PreToolUse` hook lets you approve tool permissions
+from the device. When a session asks to run a tool, Clawdmeter shows an approval
+card (project / tool / command) and you decide with the side buttons:
+
+- **Upper button (Continuar)** → approve; the tool runs.
+- **Lower button (Terminal)** → defer to the normal terminal prompt (it never
+  denies). Same result on timeout (~30 s) or if the device is disconnected.
+
+A full-screen confirmation flashes after you press: green **Aprobado** or yellow
+**Terminal**.
+
+Add the `PreToolUse` hook to `~/.claude/settings.json` (merge into `hooks`):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "timeout": 35,
+          "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-approve-hook.sh" } ] }
+    ]
+  }
+}
+```
+
+The hook only blocks while the device is connected (it checks a `device-ready`
+flag the daemon refreshes); otherwise it returns instantly and tool permissions
+behave normally. The `"timeout": 35` is required — it must exceed the device's
+30 s decision window and avoids a known no-timeout `PreToolUse` issue.
+
 ## How it works
 
 1. The daemon reads your Claude Code OAuth token — from the macOS Keychain (service `Claude Code-credentials`) on macOS, or from `~/.claude/.credentials.json` on Linux (`%USERPROFILE%\.claude\.credentials.json` on Windows).
@@ -234,6 +266,11 @@ The board has three side buttons. Left and right send HID keys; the middle (PWR)
 | **Right**        | GPIO 18      | Press to send Shift+Tab (Claude Code mode toggle)              |
 
 Space and Shift+Tab go out as standard BLE HID keyboard reports, so they trigger in whatever window has focus on the paired host — not just Claude Code.
+
+**While an approval card is showing** the two outer buttons are repurposed: the
+upper one approves (Continuar) and the lower one defers to the terminal (Terminal).
+Rotation is frozen while the card is up so the labels stay next to their buttons.
+See "Approve from the device".
 
 ## BLE protocol
 
