@@ -115,6 +115,37 @@ static bool parse_json(const char* json, UsageData* out) {
     return true;
 }
 
+static SessionEvent session_event = {};
+
+// Parse an event payload (has an "ev" key). Returns true if handled.
+static bool parse_event_json(const char* json, SessionEvent* out) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, json);
+    if (err) return false;
+    if (!doc["ev"].is<const char*>()) return false;
+    strlcpy(out->type, doc["ev"] | "", sizeof(out->type));
+    strlcpy(out->proj, doc["proj"] | "", sizeof(out->proj));
+    out->count = doc["n"] | 1;
+    out->fresh = true;
+    return true;
+}
+
+static ApprovalRequest approval_req = {};
+
+// Parse an {"ev":"ask",...} payload into an ApprovalRequest.
+static bool parse_approval_json(const char* json, ApprovalRequest* out) {
+    JsonDocument doc;
+    if (deserializeJson(doc, json)) return false;
+    strlcpy(out->id,   doc["id"]   | "", sizeof(out->id));
+    strlcpy(out->proj, doc["proj"] | "", sizeof(out->proj));
+    strlcpy(out->tool, doc["tool"] | "", sizeof(out->tool));
+    strlcpy(out->cmd,  doc["cmd"]  | "", sizeof(out->cmd));
+    out->pos   = doc["pos"]   | 1;
+    out->total = doc["total"] | 1;
+    out->fresh = true;
+    return true;
+}
+
 // ---- Serial command buffer ----
 #define CMD_BUF_SIZE 64
 static char cmd_buf[CMD_BUF_SIZE];
@@ -303,7 +334,8 @@ void loop() {
         bool primary_now = input_hal_is_held(INPUT_BTN_PRIMARY);
         if (primary_now != primary_was) {
             if (primary_now) {
-                if (idle_consume_wake_press()) primary_wake_swallowed = true;
+                if (ui_approval_active())      { ui_approval_primary(); primary_wake_swallowed = true; }
+                else if (idle_consume_wake_press()) primary_wake_swallowed = true;
                 else                            ble_keyboard_press(0x2C, 0);  // HID Space, no mods
             } else {
                 if (primary_wake_swallowed) primary_wake_swallowed = false;
@@ -318,7 +350,8 @@ void loop() {
             bool secondary_now = input_hal_is_held(INPUT_BTN_SECONDARY);
             if (secondary_now != secondary_was) {
                 if (secondary_now) {
-                    if (idle_consume_wake_press()) secondary_wake_swallowed = true;
+                    if (ui_approval_active())      { ui_approval_secondary(); secondary_wake_swallowed = true; }
+                    else if (idle_consume_wake_press()) secondary_wake_swallowed = true;
                     else                            ble_keyboard_press(0x2B, 0x02);  // HID Tab + LEFT_SHIFT
                 } else {
                     if (secondary_wake_swallowed) secondary_wake_swallowed = false;
@@ -330,10 +363,12 @@ void loop() {
 
         if (power_hal_pwr_pressed()) {
             if (!idle_consume_wake_press()) {
+                // A stuck notification banner takes priority: PWR clears it.
+                if (ui_banner_visible()) ui_banner_dismiss();
                 // On splash: cycle animations. On the usage view: cycle
                 // screen brightness (single non-splash view, no more screens).
-                if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
-                else                                          brightness_cycle();
+                else if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
+                else                                               brightness_cycle();
             }
         }
 
@@ -357,14 +392,31 @@ void loop() {
     }
 
     check_serial_cmd();
+    ui_banner_tick();
+    ui_approval_tick();
 
     if (ble_has_data()) {
-        if (parse_json(ble_get_data(), &usage)) {
-            int g_before = usage_rate_group();
+        const char* raw = ble_get_data();
+        if (strstr(raw, "\"ask\"") != nullptr) {
+            if (parse_approval_json(raw, &approval_req)) {
+                ui_show_approval(&approval_req);
+                ble_send_ack();
+            } else {
+                ble_send_nack();
+            }
+        } else if (strstr(raw, "\"ev\"") != nullptr) {
+            if (parse_event_json(raw, &session_event)) {
+                ui_show_event(&session_event);
+                ble_send_ack();
+            } else {
+                ble_send_nack();
+            }
+        } else if (parse_json(raw, &usage)) {
+            int g_before = clawdio_mood_group();
             usage_rate_sample(usage.session_pct);
-            int g_after = usage_rate_group();
+            int g_after = clawdio_mood_group();
             if (g_after != g_before) {
-                Serial.printf("usage rate: group %d -> %d (s=%.2f%%)\n",
+                Serial.printf("clawdio mood: group %d -> %d (s=%.2f%%)\n",
                     g_before, g_after, usage.session_pct);
                 if (splash_is_active()) splash_pick_for_current_rate();
             }

@@ -183,6 +183,68 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
 | `Connection failed` | Toggle Windows Bluetooth off/on in Settings. |
 | `Warning: running under Linux/WSL` | Run from a native PowerShell window, not a WSL shell. |
 
+## Session event notifications (macOS)
+
+Clawdmeter can show a banner when a Claude Code session is waiting for your
+approval, or when one finishes. This uses Claude Code hooks that append events
+to `~/.config/claude-usage-monitor/events.jsonl`, which the daemon tails.
+
+Add to `~/.claude/settings.json` (merge into any existing `hooks` block):
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-hook.sh Notification" } ] }
+    ],
+    "Stop": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-hook.sh Stop" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-hook.sh PostToolUse" } ] }
+    ]
+  }
+}
+```
+
+Replace `/ABS/PATH/` with the absolute path to your checkout. Restart Claude
+Code so it reloads settings. The daemon picks up events within ~1 second.
+
+## Approve from the device (macOS)
+
+With the daemon connected, a `PreToolUse` hook lets you approve tool permissions
+from the device. When a session asks to run a tool, Clawdmeter shows an approval
+card (project / tool / command) and you decide with the side buttons:
+
+- **Upper button (Continuar)** → approve; the tool runs.
+- **Lower button (Terminal)** → defer to the normal terminal prompt (it never
+  denies). Same result on timeout (~30 s) or if the device is disconnected.
+
+A full-screen confirmation flashes after you press: green **Aprobado** or yellow
+**Terminal**.
+
+Add the `PreToolUse` hook to `~/.claude/settings.json` (merge into `hooks`):
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "timeout": 35,
+          "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-approve-hook.sh" } ] }
+    ]
+  }
+}
+```
+
+The hook only blocks while the device is connected (it checks a `device-ready`
+flag the daemon refreshes); otherwise it returns instantly and tool permissions
+behave normally. The `"timeout": 35` is required — it must exceed the device's
+30 s decision window and avoids a known no-timeout `PreToolUse` issue.
+
 ## How it works
 
 1. The daemon reads your Claude Code OAuth token — from the macOS Keychain (service `Claude Code-credentials`) on macOS, or from `~/.claude/.credentials.json` on Linux (`%USERPROFILE%\.claude\.credentials.json` on Windows).
@@ -204,6 +266,11 @@ The board has three side buttons. Left and right send HID keys; the middle (PWR)
 | **Right**        | GPIO 18      | Press to send Shift+Tab (Claude Code mode toggle)              |
 
 Space and Shift+Tab go out as standard BLE HID keyboard reports, so they trigger in whatever window has focus on the paired host — not just Claude Code.
+
+**While an approval card is showing** the two outer buttons are repurposed: the
+upper one approves (Continuar) and the lower one defers to the terminal (Terminal).
+Rotation is frozen while the card is up so the labels stay next to their buttons.
+See "Approve from the device".
 
 ## BLE protocol
 

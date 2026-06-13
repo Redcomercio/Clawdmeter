@@ -19,6 +19,9 @@ bool ble_has_data(void);
 const char* ble_get_data(void);
 void ble_send_ack(void);
 void ble_send_nack(void);
+// Notify a swipe decision for an approval request over the TX characteristic.
+// decision is "approve" or "dismiss".
+void ble_send_decision(const char* id, const char* decision);
 void ble_request_refresh(void);
 
 // BLE HID keyboard

@@ -1,9 +1,11 @@
 #include "ui.h"
 #include "splash.h"
+#include "ble.h"
 #include <lvgl.h>
 #include "logo.h"
 #include "icons.h"
 #include "hal/board_caps.h"
+#include "hal/imu_hal.h"
 
 // Custom fonts (scaled for 314 PPI, ~1.9x from original 165 PPI)
 LV_FONT_DECLARE(font_tiempos_56);
@@ -125,6 +127,129 @@ static screen_t current_screen = SCREEN_USAGE;
 static bool     s_ble_connected = false;   // cached BLE connection state
 static uint32_t connected_at_ms = 0;       // when we last entered CONNECTED ("Connected" dwell)
 
+// ---- Session-event banner (floats on the top layer over any screen) ----
+static lv_obj_t* banner = nullptr;
+static lv_obj_t* banner_lbl = nullptr;
+static uint32_t banner_hide_at = 0;   // lv_tick when a "done" banner self-hides
+
+static void banner_tap_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    if (banner) lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+    banner_hide_at = 0;
+}
+
+static void banner_ensure(void) {
+    if (banner) return;
+    const BoardCaps& c = board_caps();
+    banner = lv_obj_create(lv_layer_top());
+    // Full-width strip near the top, inside the 20px rounded-corner margin.
+    lv_obj_set_size(banner, c.width - 40, 56);
+    lv_obj_align(banner, LV_ALIGN_TOP_MID, 0, 24);
+    lv_obj_set_style_radius(banner, 12, 0);
+    lv_obj_set_style_border_width(banner, 0, 0);
+    lv_obj_set_style_pad_all(banner, 8, 0);
+    lv_obj_clear_flag(banner, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(banner, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(banner, banner_tap_cb, LV_EVENT_CLICKED, nullptr);
+
+    banner_lbl = lv_label_create(banner);
+    lv_obj_set_style_text_font(banner_lbl, &font_styrene_20, 0);
+    lv_obj_set_style_text_color(banner_lbl, lv_color_white(), 0);
+    lv_label_set_long_mode(banner_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(banner_lbl, c.width - 56);
+    lv_obj_center(banner_lbl);
+}
+
+// ---- Speech cloud over the splash creature (approval-pending only) ----
+// A puffy white "nube" with an amber "!" that appears above the creature on
+// the splash screen, as if it were trying to get your attention. Coexists
+// with the banner. Lives on the top layer; visibility is gated on both an
+// active approval AND the splash screen being current.
+static lv_obj_t* cloud = nullptr;
+static bool      approval_on = false;
+
+// Pixel-art speech bubble, drawn block-by-block to match Clawdio's 8-bit look.
+// Legend:  K = dark outline   # = white fill   s = soft shadow
+//          ! = amber exclamation   . = transparent
+// Each char is one CELL×CELL square (CELL = splash_cell_px()), sharp corners.
+// Rectangular bubble with a thick outline and a tail trailing toward Clawdio
+// (lower-left, since the bubble sits upper-right of the centered creature).
+static const char* const CLOUD_ART[] = {
+    ".KKKKKKKKKKK.",
+    "K###########K",
+    "K####!#####sK",
+    "K####!#####sK",
+    "K####!#####sK",
+    "K##########sK",
+    "K####!#####sK",
+    "K#########ssK",
+    ".KKK#KKKKKKK.",
+    "..KK#K.......",
+    "...KK........",
+};
+#define CLOUD_ROWS 11
+#define CLOUD_COLS 13
+
+#define CLOUD_OUTLINE 0x14142b   // dark navy outline
+#define CLOUD_SHADOW  0xcdcde8   // soft lavender inner shadow
+#define CLOUD_AMBER   0xB8860B   // exclamation
+
+static void cloud_block(lv_obj_t* parent, int x, int y, int s, uint32_t hex) {
+    lv_obj_t* b = lv_obj_create(parent);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_size(b, s, s);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_set_style_radius(b, 0, 0);          // sharp, 8-bit corners
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(hex), 0);
+}
+
+static void cloud_ensure(void) {
+    if (cloud) return;
+    int s = splash_cell_px();
+    if (s <= 0) s = 10;  // splash not yet initialized; fall back to C6 cell
+
+    cloud = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(cloud);
+    lv_obj_set_size(cloud, CLOUD_COLS * s, CLOUD_ROWS * s);
+    lv_obj_clear_flag(cloud, LV_OBJ_FLAG_SCROLLABLE);
+    // Upper-right of the centered creature, clear of the top banner.
+    lv_obj_align(cloud, LV_ALIGN_CENTER, 78, -96);
+
+    for (int r = 0; r < CLOUD_ROWS; r++) {
+        for (int col = 0; col < CLOUD_COLS; col++) {
+            switch (CLOUD_ART[r][col]) {
+            case 'K': cloud_block(cloud, col * s, r * s, s, CLOUD_OUTLINE); break;
+            case '#': cloud_block(cloud, col * s, r * s, s, 0xFFFFFF);      break;
+            case 's': cloud_block(cloud, col * s, r * s, s, CLOUD_SHADOW);  break;
+            case '!': cloud_block(cloud, col * s, r * s, s, CLOUD_AMBER);   break;
+            default: break;  // '.' transparent
+            }
+        }
+    }
+
+    lv_obj_add_flag(cloud, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Reflect the approval state in the splash creature: pin it to a surprised
+// animation while pending, release it otherwise. Independent of which screen
+// is showing — the creature only renders on splash, but the pin must persist
+// so it's already surprised if the user switches back to splash.
+static void cloud_update_creature(void) {
+    if (approval_on) splash_pin_anim("expression surprise");
+    else             splash_unpin_anim();
+}
+
+// Show the cloud only while an approval is pending AND the splash is current.
+static void cloud_update_visibility(void) {
+    cloud_update_creature();
+    if (!cloud) return;
+    if (approval_on && current_screen == SCREEN_SPLASH)
+        lv_obj_clear_flag(cloud, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_add_flag(cloud, LV_OBJ_FLAG_HIDDEN);
+}
+
 // Animation state
 static uint32_t anim_last_ms = 0;
 static uint8_t anim_spinner_idx = 0;
@@ -194,6 +319,245 @@ static void format_reset_time(int mins, char* buf, size_t len) {
         snprintf(buf, len, "Resets in %dh %dm", mins / 60, mins % 60);
     } else {
         snprintf(buf, len, "Resets in %dd %dh", mins / 1440, (mins % 1440) / 60);
+    }
+}
+
+void ui_show_event(const SessionEvent* ev) {
+    if (!ev) return;
+    banner_ensure();
+    cloud_ensure();
+    char text[48];
+
+    if (strcmp(ev->type, "clear") == 0) {
+        lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        banner_hide_at = 0;
+        approval_on = false;
+        cloud_update_visibility();
+        return;
+    }
+
+    if (strcmp(ev->type, "approval") == 0) {
+        lv_obj_set_style_bg_color(banner, lv_color_hex(0xB8860B), 0);  // amber
+        if (ev->count > 1) {
+            snprintf(text, sizeof(text), LV_SYMBOL_WARNING " %s  (%u pendientes)",
+                     ev->proj, (unsigned)ev->count);
+        } else {
+            snprintf(text, sizeof(text), LV_SYMBOL_WARNING " %s  aprobacion", ev->proj);
+        }
+        lv_label_set_text(banner_lbl, text);
+        lv_obj_clear_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        banner_hide_at = 0;  // persists until daemon clears it
+        approval_on = true;
+        cloud_update_visibility();
+        return;
+    }
+
+    if (strcmp(ev->type, "done") == 0) {
+        lv_obj_set_style_bg_color(banner, lv_color_hex(0x1E7B34), 0);  // green
+        snprintf(text, sizeof(text), LV_SYMBOL_OK " %s  listo", ev->proj);
+        lv_label_set_text(banner_lbl, text);
+        lv_obj_clear_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        banner_hide_at = lv_tick_get() + 30000;  // auto-dismiss in 30s
+        approval_on = false;  // nothing pending when a done payload arrives
+        cloud_update_visibility();
+        return;
+    }
+}
+
+void ui_banner_tick(void) {
+    if (banner_hide_at != 0 && lv_tick_get() >= banner_hide_at) {
+        if (banner) lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        banner_hide_at = 0;
+    }
+}
+
+bool ui_banner_visible(void) {
+    return banner && !lv_obj_has_flag(banner, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Manual clear: wipe the notification banner AND its pending state (the amber
+// "aprobación" + Clawdio's cloud). Safety valve for when the daemon's clear
+// event is missed and a banner stays stuck after you resolved it in the terminal.
+void ui_banner_dismiss(void) {
+    if (banner) lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+    banner_hide_at = 0;
+    approval_on = false;
+    cloud_update_visibility();   // hides the cloud + unpins Clawdio
+}
+
+// ---- Approval card (overlays any screen; decided with the physical buttons) ----
+// Sized for the 480x480 square AMOLED. The screen auto-rotates upright, so the
+// physically-upper action button = "Aprobar" (top label) and the lower one =
+// "Continuar" (bottom label, defers to the terminal). Rotation is FROZEN while
+// the card is up so the button↔label mapping can't shift under the user.
+//
+// Which physical button (PRIMARY/BOOT vs SECONDARY/KEY) is the upper one depends
+// on the frozen quadrant. PRIMARY_IS_UPPER() encodes that; tuned on hardware.
+static lv_obj_t* card = nullptr;
+static lv_obj_t* card_proj = nullptr;
+static lv_obj_t* card_tool = nullptr;
+static lv_obj_t* card_cmd  = nullptr;
+static lv_obj_t* card_pos  = nullptr;
+static char      card_id[40] = {0};
+static uint32_t  card_hide_at = 0;     // lv_tick when the 30s timeout fires
+static bool      card_visible = false;
+static uint8_t   card_quadrant = 0;    // rotation quadrant frozen at show time
+
+// At quadrant 0 the PRIMARY (BOOT) button is the gravity-upper one; at 180°
+// (quadrant 2) the column flips so SECONDARY is upper. Quadrants 1/3 (buttons
+// horizontal) have no true upper — default to the quadrant-0 assignment.
+// QA on hardware: if approve/continue feel swapped, flip this predicate.
+static bool primary_is_upper(uint8_t q) { return !(q == 2); }
+
+// ---- Decision confirmation flash (full-screen colour + word, ~1.5s) ----
+static lv_obj_t* confirm = nullptr;
+static lv_obj_t* confirm_lbl = nullptr;
+static uint32_t  confirm_hide_at = 0;
+
+static void confirm_ensure(void) {
+    if (confirm) return;
+    const BoardCaps& c = board_caps();
+    confirm = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(confirm, c.width, c.height);
+    lv_obj_align(confirm, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(confirm, 0, 0);
+    lv_obj_set_style_border_width(confirm, 0, 0);
+    lv_obj_clear_flag(confirm, LV_OBJ_FLAG_SCROLLABLE);
+    confirm_lbl = lv_label_create(confirm);
+    lv_obj_set_style_text_font(confirm_lbl, &font_styrene_48, 0);
+    lv_obj_center(confirm_lbl);
+    lv_obj_add_flag(confirm, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void confirm_flash(const char* decision) {
+    confirm_ensure();
+    if (strcmp(decision, "approve") == 0) {
+        lv_obj_set_style_bg_color(confirm, lv_color_hex(0x1E7B34), 0);   // green
+        lv_obj_set_style_text_color(confirm_lbl, lv_color_white(), 0);
+        lv_label_set_text(confirm_lbl, LV_SYMBOL_OK "  Aprobado");
+    } else {
+        lv_obj_set_style_bg_color(confirm, lv_color_hex(0xD9A521), 0);   // yellow
+        lv_obj_set_style_text_color(confirm_lbl, lv_color_hex(0x202028), 0);
+        lv_label_set_text(confirm_lbl, "Terminal");
+    }
+    lv_obj_center(confirm_lbl);
+    lv_obj_move_foreground(confirm);
+    lv_obj_clear_flag(confirm, LV_OBJ_FLAG_HIDDEN);
+    confirm_hide_at = lv_tick_get() + 1500;
+}
+
+static void card_finish(const char* decision) {
+    if (card) lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
+    card_hide_at = 0;
+    card_visible = false;
+    imu_hal_lock_rotation(false);   // resume auto-rotation
+    if (card_id[0]) {
+        ble_send_decision(card_id, decision);
+        card_id[0] = '\0';
+    }
+    splash_unpin_anim();
+    confirm_flash(decision);        // visual confirmation of what was pressed
+}
+
+static void card_ensure(void) {
+    if (card) return;
+    const BoardCaps& c = board_caps();
+    card = lv_obj_create(lv_layer_top());
+    // Near-full-screen square card for the small 2.16" 480x480 panel — big text.
+    lv_obj_set_size(card, c.width - 16, c.height - 16);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(card, 22, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x202028), 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Action labels live on the RIGHT edge, aligned to the two outer physical
+    // buttons (upper third = upper button, lower third = lower button; the
+    // middle button sits between them). Upper = Continuar (approve), lower =
+    // Terminal (defer to the terminal).
+    lv_obj_t* top = lv_label_create(card);
+    lv_obj_set_style_text_font(top, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(top, lv_color_hex(0x35c46a), 0);
+    lv_label_set_text(top, "Continuar  " LV_SYMBOL_RIGHT);
+    lv_obj_align(top, LV_ALIGN_RIGHT_MID, 0, -120);
+
+    lv_obj_t* bot = lv_label_create(card);
+    lv_obj_set_style_text_font(bot, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(bot, lv_color_hex(0x9a9aa2), 0);
+    lv_label_set_text(bot, "Terminal  " LV_SYMBOL_RIGHT);
+    lv_obj_align(bot, LV_ALIGN_RIGHT_MID, 0, 120);
+
+    // Content (project / tool / command) fills the left, clear of the buttons.
+    int32_t content_w = c.width - 72;
+
+    card_proj = lv_label_create(card);
+    lv_obj_set_style_text_font(card_proj, &font_styrene_48, 0);
+    lv_obj_set_style_text_color(card_proj, lv_color_white(), 0);
+    lv_label_set_long_mode(card_proj, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(card_proj, content_w);
+    lv_obj_align(card_proj, LV_ALIGN_LEFT_MID, 0, -40);
+
+    card_tool = lv_label_create(card);
+    lv_obj_set_style_text_font(card_tool, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(card_tool, lv_color_hex(0xB8860B), 0);
+    lv_obj_align(card_tool, LV_ALIGN_LEFT_MID, 0, 12);
+
+    card_cmd = lv_label_create(card);
+    lv_obj_set_style_text_font(card_cmd, &font_styrene_24, 0);
+    lv_obj_set_style_text_color(card_cmd, lv_color_hex(0xcfcfd6), 0);
+    lv_label_set_long_mode(card_cmd, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(card_cmd, content_w);
+    lv_obj_align(card_cmd, LV_ALIGN_LEFT_MID, 0, 52);
+
+    card_pos = lv_label_create(card);
+    lv_obj_set_style_text_font(card_pos, &font_styrene_16, 0);
+    lv_obj_set_style_text_color(card_pos, lv_color_hex(0x9a9aa2), 0);
+    lv_obj_align(card_pos, LV_ALIGN_TOP_LEFT, 0, 4);
+
+    lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ui_show_approval(const ApprovalRequest* req) {
+    if (!req) return;
+    card_ensure();
+    strlcpy(card_id, req->id, sizeof(card_id));
+    lv_label_set_text(card_proj, req->proj);
+    lv_label_set_text(card_tool, req->tool);
+    lv_label_set_text(card_cmd, req->cmd);
+    char pos[16];
+    snprintf(pos, sizeof(pos), "%u de %u", (unsigned)req->pos, (unsigned)req->total);
+    lv_label_set_text(card_pos, pos);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_HIDDEN);
+    card_hide_at = lv_tick_get() + 30000;  // auto-dismiss in 30s
+    card_visible = true;
+    card_quadrant = imu_hal_rotation_quadrant();
+    imu_hal_lock_rotation(true);            // freeze so buttons don't remap
+    splash_pin_anim("expression surprise");
+}
+
+bool ui_approval_active(void) { return card_visible; }
+
+// Physical buttons resolve the card. The upper button approves; the lower one
+// defers to the terminal. Which physical button is upper comes from the frozen
+// quadrant (see primary_is_upper).
+void ui_approval_primary(void) {
+    if (!card_visible) return;
+    card_finish(primary_is_upper(card_quadrant) ? "approve" : "dismiss");
+}
+
+void ui_approval_secondary(void) {
+    if (!card_visible) return;
+    card_finish(primary_is_upper(card_quadrant) ? "dismiss" : "approve");
+}
+
+void ui_approval_tick(void) {
+    if (card_hide_at != 0 && lv_tick_get() >= card_hide_at) {
+        card_finish("dismiss");
+    }
+    if (confirm_hide_at != 0 && lv_tick_get() >= confirm_hide_at) {
+        if (confirm) lv_obj_add_flag(confirm, LV_OBJ_FLAG_HIDDEN);
+        confirm_hide_at = 0;
     }
 }
 
@@ -481,6 +845,7 @@ void ui_show_screen(screen_t screen) {
     if (screen != SCREEN_SPLASH) prev_non_splash_screen = screen;
     current_screen = screen;
     apply_battery_visibility();
+    cloud_update_visibility();
 }
 
 void ui_toggle_splash(void) {

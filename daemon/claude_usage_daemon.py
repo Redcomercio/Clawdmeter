@@ -21,10 +21,13 @@ import httpx
 from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
 
+from approval_broker import ApprovalBroker
+
 DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
 REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
+TX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000003"  # device -> host notify
 
 POLL_INTERVAL = 60
 TICK = 5
@@ -35,6 +38,12 @@ SCAN_TIMEOUT = 8.0
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 SAVED_ADDR_FILE = Path.home() / ".config" / "claude-usage-monitor" / "ble-address"
+EVENT_FILE = Path.home() / ".config" / "claude-usage-monitor" / "events.jsonl"
+EVENT_TICK = 1.0  # seconds between event-file size checks
+
+DEVICE_READY_FILE = Path.home() / ".config" / "claude-usage-monitor" / "device-ready"
+APPROVE_DIR = Path.home() / ".config" / "claude-usage-monitor" / "approve"
+APPROVE_TICK = 0.3  # seconds between approve-dir scans
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_HEADERS_TEMPLATE = {
@@ -314,6 +323,144 @@ async def poll_api(token: str) -> dict | None:
     return payload
 
 
+EVICT_SECONDS = 600  # forget a session 10 min after its last event
+
+
+class EventTracker:
+    """Pure state machine over normalized session events.
+
+    Feed it event dicts ({"sid","proj","ev","ts"}); it returns the BLE
+    payload to send (or None when nothing should change on the device).
+    """
+
+    def __init__(self) -> None:
+        # sid -> {"proj": str, "pending": bool, "ts": int}
+        self._sessions: dict[str, dict] = {}
+
+    def _evict(self, now: float) -> None:
+        stale = [sid for sid, s in self._sessions.items()
+                 if now - s["ts"] > EVICT_SECONDS]
+        for sid in stale:
+            del self._sessions[sid]
+
+    def _pending_count(self) -> int:
+        return sum(1 for s in self._sessions.values() if s["pending"])
+
+    def _amber_payload(self) -> dict:
+        # Most recently touched pending session names the banner.
+        pend = [s for s in self._sessions.values() if s["pending"]]
+        latest = max(pend, key=lambda s: s["ts"])
+        return {"ev": "approval", "proj": latest["proj"], "n": len(pend)}
+
+    def current_state(self) -> dict | None:
+        """The banner payload reflecting current pending sessions, or None.
+
+        Used to re-assert device state on reconnect. Returns the amber
+        payload if any session is pending, else a clear so a stale banner
+        on the device is dismissed."""
+        if self._pending_count():
+            return self._amber_payload()
+        return {"ev": "clear"}
+
+    def feed(self, event: dict, now: float) -> dict | None:
+        self._evict(now)
+        sid = event.get("sid", "")
+        proj = event.get("proj", "?")
+        ev = event.get("ev", "")
+        s = self._sessions.setdefault(sid, {"proj": proj, "pending": False, "ts": now})
+        s["proj"] = proj
+        s["ts"] = now
+
+        if ev == "approval":
+            s["pending"] = True
+            return self._amber_payload()
+
+        if ev == "activity":
+            if s["pending"]:
+                s["pending"] = False
+                return self._amber_payload() if self._pending_count() else {"ev": "clear"}
+            return None
+
+        if ev == "done":
+            s["pending"] = False
+            if self._pending_count():
+                return self._amber_payload()
+            return {"ev": "done", "proj": proj}
+
+        return None
+
+
+def parse_event_line(line: str) -> dict | None:
+    """Parse one JSONL event line; return None if malformed."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        log(f"Skipping malformed event line: {line[:80]!r}")
+        return None
+    if not isinstance(obj, dict) or "ev" not in obj:
+        return None
+    return obj
+
+
+async def watch_events(session: "Session", tracker: EventTracker,
+                       watch_pos: dict, stop_event: asyncio.Event) -> None:
+    """Tail EVENT_FILE; push tracker payloads to the device as events arrive."""
+    while not stop_event.is_set() and session.client.is_connected:
+        try:
+            size = EVENT_FILE.stat().st_size if EVENT_FILE.exists() else 0
+            if size < watch_pos["pos"]:
+                watch_pos["pos"] = 0  # file truncated/rotated
+            if size > watch_pos["pos"]:
+                with EVENT_FILE.open("r") as f:
+                    f.seek(watch_pos["pos"])
+                    new = f.read()
+                    watch_pos["pos"] = f.tell()
+                for line in new.splitlines():
+                    obj = parse_event_line(line)
+                    if obj is None:
+                        continue
+                    payload = tracker.feed(obj, now=time.time())
+                    if payload is not None:
+                        await session.write_payload(payload)
+        except (OSError, BleakError) as e:
+            log(f"Event watch error: {e}")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=EVENT_TICK)
+        except asyncio.TimeoutError:
+            pass
+
+
+def touch_device_ready() -> None:
+    try:
+        DEVICE_READY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        DEVICE_READY_FILE.touch()
+    except OSError as e:
+        log(f"device-ready touch failed: {e}")
+
+
+def clear_device_ready() -> None:
+    DEVICE_READY_FILE.unlink(missing_ok=True)
+
+
+async def run_broker(session: "Session", broker: ApprovalBroker,
+                     stop_event: asyncio.Event) -> None:
+    """Scan the approve dir; send the head request to the device over RX."""
+    while not stop_event.is_set() and session.client.is_connected:
+        try:
+            payload = broker.scan()
+            if payload is not None:
+                await session.write_payload(payload)
+        except (OSError, BleakError) as e:
+            log(f"Broker error: {e}")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=APPROVE_TICK)
+        except asyncio.TimeoutError:
+            pass
+
+
 class Session:
     def __init__(self, client: BleakClient) -> None:
         self.client = client
@@ -329,6 +476,25 @@ class Session:
         except (BleakError, ValueError) as e:
             log(f"Refresh subscription unavailable: {e}")
 
+    def attach_broker(self, broker) -> None:
+        self._broker = broker
+
+    def _on_tx(self, _char, data: bytearray) -> None:
+        try:
+            msg = json.loads(bytes(data).decode())
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return
+        rid, d = msg.get("id"), msg.get("d")
+        if rid and d in ("approve", "dismiss") and getattr(self, "_broker", None):
+            log(f"Swipe decision {d} for {rid}")
+            self._broker.decide(rid, d)
+
+    async def setup_tx_subscription(self) -> None:
+        try:
+            await self.client.start_notify(TX_CHAR_UUID, self._on_tx)
+        except (BleakError, ValueError) as e:
+            log(f"TX subscription unavailable: {e}")
+
     async def write_payload(self, payload: dict) -> bool:
         data = json.dumps(payload, separators=(",", ":")).encode()
         log(f"Sending: {data.decode()}")
@@ -340,7 +506,8 @@ class Session:
             return False
 
 
-async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
+async def connect_and_run(target, stop_event: asyncio.Event,
+                          tracker: EventTracker, watch_pos: dict) -> bool:
     """Connect to a target and poll until disconnected or stopped.
 
     ``target`` is either an address string (Linux) or a BLEDevice carrying
@@ -364,37 +531,66 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
     log("Connected")
     session = Session(client)
     await session.setup_refresh_subscription()
+    broker = ApprovalBroker(APPROVE_DIR)
+    session.attach_broker(broker)
+    await session.setup_tx_subscription()
+    touch_device_ready()
 
-    last_poll = 0.0
-    used_successfully = False
-    try:
+    # Re-assert the current banner state so a reconnected device is in sync.
+    state = tracker.current_state()
+    if state is not None:
+        await session.write_payload(state)
+
+    used = {"ok": False}
+
+    async def poll_loop() -> None:
+        last_poll = 0.0
         while client.is_connected and not stop_event.is_set():
             now = time.time()
-            elapsed = now - last_poll
-            if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL:
+            if session.refresh_requested.is_set() or (now - last_poll) >= POLL_INTERVAL:
                 session.refresh_requested.clear()
                 token = read_token()
                 if not token:
                     log("No token; skipping poll")
                 else:
                     payload = await poll_api(token)
-                    if payload is not None:
-                        if await session.write_payload(payload):
-                            last_poll = time.time()
-                            used_successfully = True
-
+                    if payload is not None and await session.write_payload(payload):
+                        last_poll = time.time()
+                        used["ok"] = True
+                        touch_device_ready()
             try:
                 await asyncio.wait_for(session.refresh_requested.wait(), timeout=TICK)
             except asyncio.TimeoutError:
                 pass
+
+    poll_task = asyncio.create_task(poll_loop())
+    watch_task = asyncio.create_task(
+        watch_events(session, tracker, watch_pos, stop_event))
+    broker_task = asyncio.create_task(run_broker(session, broker, stop_event))
+    try:
+        done, pending = await asyncio.wait(
+            {poll_task, watch_task, broker_task}, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        for t in pending:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+        # Surface any real exception from the finished task(s).
+        for t in done:
+            exc = t.exception()
+            if exc is not None:
+                log(f"Task error: {exc}")
     finally:
+        clear_device_ready()
         try:
             await client.disconnect()
         except BleakError:
             pass
 
     log("Device disconnected" if not stop_event.is_set() else "Stopping")
-    return used_successfully
+    return used["ok"]
 
 
 async def main() -> None:
@@ -414,6 +610,16 @@ async def main() -> None:
     log("=== Claude Usage Tracker Daemon (BLE, macOS) ===")
     log(f"Poll interval: {POLL_INTERVAL}s")
 
+    # Stale events from before this daemon started are meaningless.
+    try:
+        EVENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        EVENT_FILE.write_text("")
+    except OSError as e:
+        log(f"Could not reset event file: {e}")
+
+    tracker = EventTracker()
+    watch_pos = {"pos": 0}  # persists file read position across reconnects
+
     backoff = 1
     skip_addr: str | None = None  # macOS: a peripheral to skip for one cycle
     while not stop_event.is_set():
@@ -431,7 +637,7 @@ async def main() -> None:
             continue
 
         addr = target if isinstance(target, str) else target.address
-        ok = await connect_and_run(target, stop_event)
+        ok = await connect_and_run(target, stop_event, tracker, watch_pos)
         if not ok:
             if sys.platform == "darwin":
                 # No string cache to drop; instead skip this stale handle on

@@ -22,6 +22,10 @@ void imu_hal_tick(void) {
     // No-op — rotation is disabled.
 }
 
+void imu_hal_lock_rotation(bool) {
+    // No-op — rotation is disabled on this board.
+}
+
 uint8_t imu_hal_rotation_quadrant(void) { return 0; }
 
 void imu_hal_print_debug(void) {
