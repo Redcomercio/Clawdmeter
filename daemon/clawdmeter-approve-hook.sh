@@ -34,7 +34,9 @@ else
     cmd=""
 fi
 proj=$(basename "$cwd" 2>/dev/null); [ -z "$proj" ] && proj="?"
-id="${sid}-$(date +%s%N)"
+# macOS `date` has no %N (nanoseconds); use epoch seconds + this hook's PID,
+# unique per invocation, to avoid id collisions within the same second.
+id="${sid}-$(date +%s)-$$"
 
 mkdir -p "$appdir" 2>/dev/null
 req="$appdir/$id.req"
