@@ -9,3 +9,4 @@
 void    imu_hal_init(void);
 void    imu_hal_tick(void);
 uint8_t imu_hal_rotation_quadrant(void);
+void    imu_hal_print_debug(void);  // print raw accel + rotation state to Serial

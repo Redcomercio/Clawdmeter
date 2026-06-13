@@ -51,9 +51,16 @@
 #define BTN_BACK_GPIO        9
 #define BTN_FWD_GPIO         10
 
+// ---- Rotation offset ----
+// Y axis inverted in accel_to_rotation() to match PCB mounting.
+// With inverted Y: raw=1 (ay>0) = usuario, raw=3 (ay<0) = abajo.
+// Offset 3 aligns: (1+3)%4=0 usuario, (3+3)%4=2 abajo, (0/2+3)%4=3/1 costados.
+// Applied as (imu_quadrant + BOARD_ROTATION_OFFSET) % 4 in imu_hal_rotation_quadrant().
+#define BOARD_ROTATION_OFFSET 3
+
 // ---- Capability flags ----
 #define BOARD_HAS_SECONDARY_BUTTON 1
-#define BOARD_HAS_ROTATION         0    // C6 has no PSRAM headroom for the rotation strip
+#define BOARD_HAS_ROTATION         1    // rotation strip fits in internal SRAM (37 KB)
 #define BOARD_HAS_IMU              1    // present + initialized for I2C bus health
 #define BOARD_HAS_BATTERY          1
 #define BOARD_HAS_IO_EXPANDER      0    // TCA9554 exists on board but only services audio

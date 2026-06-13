@@ -64,3 +64,20 @@ void imu_hal_tick(void) {
 }
 
 uint8_t imu_hal_rotation_quadrant(void) { return current_rotation; }
+
+void imu_hal_print_debug(void) {
+    if (!imu_ok) {
+        Serial.println("IMU: init failed — imu_ok=false");
+        return;
+    }
+    float ax, ay, az;
+    if (!imu.getAccelerometer(ax, ay, az)) {
+        Serial.println("IMU: getAccelerometer failed");
+        return;
+    }
+    uint8_t raw = accel_to_rotation(ax, ay);
+    Serial.printf("IMU: ax=%.3f ay=%.3f az=%.3f  raw=%s  rotation=%d  candidate=%d\n",
+        ax, ay, az,
+        raw == 255 ? "ambiguous" : String(raw).c_str(),
+        current_rotation, candidate_rotation);
+}
