@@ -372,6 +372,7 @@ void loop() {
     }
 
     check_serial_cmd();
+    ui_banner_tick();
 
     if (ble_has_data()) {
         const char* raw = ble_get_data();

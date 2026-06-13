@@ -125,6 +125,39 @@ static screen_t current_screen = SCREEN_USAGE;
 static bool     s_ble_connected = false;   // cached BLE connection state
 static uint32_t connected_at_ms = 0;       // when we last entered CONNECTED ("Connected" dwell)
 
+// ---- Session-event banner (floats on the top layer over any screen) ----
+static lv_obj_t* banner = nullptr;
+static lv_obj_t* banner_lbl = nullptr;
+static uint32_t banner_hide_at = 0;   // lv_tick when a "done" banner self-hides
+
+static void banner_tap_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    if (banner) lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+    banner_hide_at = 0;
+}
+
+static void banner_ensure(void) {
+    if (banner) return;
+    const BoardCaps& c = board_caps();
+    banner = lv_obj_create(lv_layer_top());
+    // Full-width strip near the top, inside the 20px rounded-corner margin.
+    lv_obj_set_size(banner, c.width - 40, 56);
+    lv_obj_align(banner, LV_ALIGN_TOP_MID, 0, 24);
+    lv_obj_set_style_radius(banner, 12, 0);
+    lv_obj_set_style_border_width(banner, 0, 0);
+    lv_obj_set_style_pad_all(banner, 8, 0);
+    lv_obj_clear_flag(banner, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(banner, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(banner, banner_tap_cb, LV_EVENT_CLICKED, nullptr);
+
+    banner_lbl = lv_label_create(banner);
+    lv_obj_set_style_text_font(banner_lbl, &font_styrene_20, 0);
+    lv_obj_set_style_text_color(banner_lbl, lv_color_white(), 0);
+    lv_label_set_long_mode(banner_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(banner_lbl, c.width - 56);
+    lv_obj_center(banner_lbl);
+}
+
 // Animation state
 static uint32_t anim_last_ms = 0;
 static uint8_t anim_spinner_idx = 0;
@@ -194,6 +227,48 @@ static void format_reset_time(int mins, char* buf, size_t len) {
         snprintf(buf, len, "Resets in %dh %dm", mins / 60, mins % 60);
     } else {
         snprintf(buf, len, "Resets in %dd %dh", mins / 1440, (mins % 1440) / 60);
+    }
+}
+
+void ui_show_event(const SessionEvent* ev) {
+    if (!ev) return;
+    banner_ensure();
+    char text[48];
+
+    if (strcmp(ev->type, "clear") == 0) {
+        lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        banner_hide_at = 0;
+        return;
+    }
+
+    if (strcmp(ev->type, "approval") == 0) {
+        lv_obj_set_style_bg_color(banner, lv_color_hex(0xB8860B), 0);  // amber
+        if (ev->count > 1) {
+            snprintf(text, sizeof(text), LV_SYMBOL_WARNING " %s  (%u pendientes)",
+                     ev->proj, (unsigned)ev->count);
+        } else {
+            snprintf(text, sizeof(text), LV_SYMBOL_WARNING " %s  aprobacion", ev->proj);
+        }
+        lv_label_set_text(banner_lbl, text);
+        lv_obj_clear_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        banner_hide_at = 0;  // persists until daemon clears it
+        return;
+    }
+
+    if (strcmp(ev->type, "done") == 0) {
+        lv_obj_set_style_bg_color(banner, lv_color_hex(0x1E7B34), 0);  // green
+        snprintf(text, sizeof(text), LV_SYMBOL_OK " %s  listo", ev->proj);
+        lv_label_set_text(banner_lbl, text);
+        lv_obj_clear_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        banner_hide_at = lv_tick_get() + 30000;  // auto-dismiss in 30s
+        return;
+    }
+}
+
+void ui_banner_tick(void) {
+    if (banner_hide_at != 0 && lv_tick_get() >= banner_hide_at) {
+        if (banner) lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+        banner_hide_at = 0;
     }
 }
 
