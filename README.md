@@ -183,6 +183,36 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
 | `Connection failed` | Toggle Windows Bluetooth off/on in Settings. |
 | `Warning: running under Linux/WSL` | Run from a native PowerShell window, not a WSL shell. |
 
+## Session event notifications (macOS)
+
+Clawdmeter can show a banner when a Claude Code session is waiting for your
+approval, or when one finishes. This uses Claude Code hooks that append events
+to `~/.config/claude-usage-monitor/events.jsonl`, which the daemon tails.
+
+Add to `~/.claude/settings.json` (merge into any existing `hooks` block):
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-hook.sh Notification" } ] }
+    ],
+    "Stop": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-hook.sh Stop" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-hook.sh PostToolUse" } ] }
+    ]
+  }
+}
+```
+
+Replace `/ABS/PATH/` with the absolute path to your checkout. Restart Claude
+Code so it reloads settings. The daemon picks up events within ~1 second.
+
 ## How it works
 
 1. The daemon reads your Claude Code OAuth token — from the macOS Keychain (service `Claude Code-credentials`) on macOS, or from `~/.claude/.credentials.json` on Linux (`%USERPROFILE%\.claude\.credentials.json` on Windows).
