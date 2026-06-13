@@ -21,10 +21,13 @@ import httpx
 from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
 
+from approval_broker import ApprovalBroker
+
 DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
 RX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000002"
 REQ_CHAR_UUID = "4c41555a-4465-7669-6365-000000000004"
+TX_CHAR_UUID = "4c41555a-4465-7669-6365-000000000003"  # device -> host notify
 
 POLL_INTERVAL = 60
 TICK = 5
@@ -37,6 +40,10 @@ CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 SAVED_ADDR_FILE = Path.home() / ".config" / "claude-usage-monitor" / "ble-address"
 EVENT_FILE = Path.home() / ".config" / "claude-usage-monitor" / "events.jsonl"
 EVENT_TICK = 1.0  # seconds between event-file size checks
+
+DEVICE_READY_FILE = Path.home() / ".config" / "claude-usage-monitor" / "device-ready"
+APPROVE_DIR = Path.home() / ".config" / "claude-usage-monitor" / "approve"
+APPROVE_TICK = 0.3  # seconds between approve-dir scans
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_HEADERS_TEMPLATE = {
@@ -426,6 +433,34 @@ async def watch_events(session: "Session", tracker: EventTracker,
             pass
 
 
+def touch_device_ready() -> None:
+    try:
+        DEVICE_READY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        DEVICE_READY_FILE.touch()
+    except OSError as e:
+        log(f"device-ready touch failed: {e}")
+
+
+def clear_device_ready() -> None:
+    DEVICE_READY_FILE.unlink(missing_ok=True)
+
+
+async def run_broker(session: "Session", broker: ApprovalBroker,
+                     stop_event: asyncio.Event) -> None:
+    """Scan the approve dir; send the head request to the device over RX."""
+    while not stop_event.is_set() and session.client.is_connected:
+        try:
+            payload = broker.scan()
+            if payload is not None:
+                await session.write_payload(payload)
+        except (OSError, BleakError) as e:
+            log(f"Broker error: {e}")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=APPROVE_TICK)
+        except asyncio.TimeoutError:
+            pass
+
+
 class Session:
     def __init__(self, client: BleakClient) -> None:
         self.client = client
@@ -440,6 +475,25 @@ class Session:
             await self.client.start_notify(REQ_CHAR_UUID, self._on_refresh)
         except (BleakError, ValueError) as e:
             log(f"Refresh subscription unavailable: {e}")
+
+    def attach_broker(self, broker) -> None:
+        self._broker = broker
+
+    def _on_tx(self, _char, data: bytearray) -> None:
+        try:
+            msg = json.loads(bytes(data).decode())
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return
+        rid, d = msg.get("id"), msg.get("d")
+        if rid and d in ("approve", "dismiss") and getattr(self, "_broker", None):
+            log(f"Swipe decision {d} for {rid}")
+            self._broker.decide(rid, d)
+
+    async def setup_tx_subscription(self) -> None:
+        try:
+            await self.client.start_notify(TX_CHAR_UUID, self._on_tx)
+        except (BleakError, ValueError) as e:
+            log(f"TX subscription unavailable: {e}")
 
     async def write_payload(self, payload: dict) -> bool:
         data = json.dumps(payload, separators=(",", ":")).encode()
@@ -477,6 +531,10 @@ async def connect_and_run(target, stop_event: asyncio.Event,
     log("Connected")
     session = Session(client)
     await session.setup_refresh_subscription()
+    broker = ApprovalBroker(APPROVE_DIR)
+    session.attach_broker(broker)
+    await session.setup_tx_subscription()
+    touch_device_ready()
 
     # Re-assert the current banner state so a reconnected device is in sync.
     state = tracker.current_state()
@@ -499,6 +557,7 @@ async def connect_and_run(target, stop_event: asyncio.Event,
                     if payload is not None and await session.write_payload(payload):
                         last_poll = time.time()
                         used["ok"] = True
+                        touch_device_ready()
             try:
                 await asyncio.wait_for(session.refresh_requested.wait(), timeout=TICK)
             except asyncio.TimeoutError:
@@ -507,9 +566,10 @@ async def connect_and_run(target, stop_event: asyncio.Event,
     poll_task = asyncio.create_task(poll_loop())
     watch_task = asyncio.create_task(
         watch_events(session, tracker, watch_pos, stop_event))
+    broker_task = asyncio.create_task(run_broker(session, broker, stop_event))
     try:
         done, pending = await asyncio.wait(
-            {poll_task, watch_task}, return_when=asyncio.FIRST_COMPLETED)
+            {poll_task, watch_task, broker_task}, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
         for t in pending:
@@ -523,6 +583,7 @@ async def connect_and_run(target, stop_event: asyncio.Event,
             if exc is not None:
                 log(f"Task error: {exc}")
     finally:
+        clear_device_ready()
         try:
             await client.disconnect()
         except BleakError:
