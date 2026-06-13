@@ -63,7 +63,9 @@ old amber banner does not fire for that request — the swipe card replaces it.
 Reads the hook JSON on stdin. Behavior:
 
 1. Read `device-ready` flag (`~/.config/claude-usage-monitor/device-ready`). If
-   missing or older than 5 s → emit `ask` and exit (no wait).
+   missing or older than 10 s → emit `ask` and exit (no wait). The daemon
+   refreshes the flag every poll tick (~5 s) while connected, so 10 s gives a
+   one-tick margin against false negatives.
 2. Generate a unique `id` (`session_id` + epoch-ns).
 3. Write the request to `~/.config/claude-usage-monitor/approve/<id>.req`:
    `{"id","sid","proj":<basename cwd>,"tool":<tool_name>,"cmd":<short tool_input>}`
@@ -81,7 +83,8 @@ silent-close bug).
 ### 2. Daemon — `daemon/claude_usage_daemon.py`
 
 - **`device-ready` flag:** while a BLE session is connected, touch the flag every
-  poll tick; remove it on disconnect/shutdown.
+  poll tick (~5 s); remove it on disconnect/shutdown. The hook treats it as fresh
+  for 10 s.
 - **TX subscription:** subscribe to the TX characteristic (`...0003`) and parse
   device decisions `{"id","d":"approve"|"dismiss"}`.
 - **`ApprovalBroker`:** watches the `approve/` directory for `<id>.req` files,
