@@ -35,6 +35,8 @@ SCAN_TIMEOUT = 8.0
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 SAVED_ADDR_FILE = Path.home() / ".config" / "claude-usage-monitor" / "ble-address"
+EVENT_FILE = Path.home() / ".config" / "claude-usage-monitor" / "events.jsonl"
+EVENT_TICK = 1.0  # seconds between event-file size checks
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_HEADERS_TEMPLATE = {
@@ -371,6 +373,50 @@ class EventTracker:
         return None
 
 
+def parse_event_line(line: str) -> dict | None:
+    """Parse one JSONL event line; return None if malformed."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        log(f"Skipping malformed event line: {line[:80]!r}")
+        return None
+    if not isinstance(obj, dict) or "ev" not in obj:
+        return None
+    return obj
+
+
+async def watch_events(session: "Session", tracker: EventTracker,
+                       stop_event: asyncio.Event) -> None:
+    """Tail EVENT_FILE; push tracker payloads to the device as events arrive."""
+    pos = EVENT_FILE.stat().st_size if EVENT_FILE.exists() else 0
+    while not stop_event.is_set() and session.client.is_connected:
+        try:
+            size = EVENT_FILE.stat().st_size if EVENT_FILE.exists() else 0
+            if size < pos:
+                pos = 0  # file truncated/rotated
+            if size > pos:
+                with EVENT_FILE.open("r") as f:
+                    f.seek(pos)
+                    new = f.read()
+                    pos = f.tell()
+                for line in new.splitlines():
+                    obj = parse_event_line(line)
+                    if obj is None:
+                        continue
+                    payload = tracker.feed(obj, now=time.time())
+                    if payload is not None:
+                        await session.write_payload(payload)
+        except (OSError, BleakError) as e:
+            log(f"Event watch error: {e}")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=EVENT_TICK)
+        except asyncio.TimeoutError:
+            pass
+
+
 class Session:
     def __init__(self, client: BleakClient) -> None:
         self.client = client
@@ -421,29 +467,34 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
     log("Connected")
     session = Session(client)
     await session.setup_refresh_subscription()
+    tracker = EventTracker()
 
-    last_poll = 0.0
-    used_successfully = False
-    try:
+    used = {"ok": False}
+
+    async def poll_loop() -> None:
+        last_poll = 0.0
         while client.is_connected and not stop_event.is_set():
             now = time.time()
-            elapsed = now - last_poll
-            if session.refresh_requested.is_set() or elapsed >= POLL_INTERVAL:
+            if session.refresh_requested.is_set() or (now - last_poll) >= POLL_INTERVAL:
                 session.refresh_requested.clear()
                 token = read_token()
                 if not token:
                     log("No token; skipping poll")
                 else:
                     payload = await poll_api(token)
-                    if payload is not None:
-                        if await session.write_payload(payload):
-                            last_poll = time.time()
-                            used_successfully = True
-
+                    if payload is not None and await session.write_payload(payload):
+                        last_poll = time.time()
+                        used["ok"] = True
             try:
                 await asyncio.wait_for(session.refresh_requested.wait(), timeout=TICK)
             except asyncio.TimeoutError:
                 pass
+
+    try:
+        await asyncio.gather(
+            poll_loop(),
+            watch_events(session, tracker, stop_event),
+        )
     finally:
         try:
             await client.disconnect()
@@ -451,7 +502,7 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
             pass
 
     log("Device disconnected" if not stop_event.is_set() else "Stopping")
-    return used_successfully
+    return used["ok"]
 
 
 async def main() -> None:
@@ -470,6 +521,13 @@ async def main() -> None:
 
     log("=== Claude Usage Tracker Daemon (BLE, macOS) ===")
     log(f"Poll interval: {POLL_INTERVAL}s")
+
+    # Stale events from before this daemon started are meaningless.
+    try:
+        EVENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        EVENT_FILE.write_text("")
+    except OSError as e:
+        log(f"Could not reset event file: {e}")
 
     backoff = 1
     skip_addr: str | None = None  # macOS: a peripheral to skip for one cycle
