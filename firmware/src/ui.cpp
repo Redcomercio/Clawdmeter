@@ -371,6 +371,20 @@ void ui_banner_tick(void) {
     }
 }
 
+bool ui_banner_visible(void) {
+    return banner && !lv_obj_has_flag(banner, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Manual clear: wipe the notification banner AND its pending state (the amber
+// "aprobación" + Clawdio's cloud). Safety valve for when the daemon's clear
+// event is missed and a banner stays stuck after you resolved it in the terminal.
+void ui_banner_dismiss(void) {
+    if (banner) lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
+    banner_hide_at = 0;
+    approval_on = false;
+    cloud_update_visibility();   // hides the cloud + unpins Clawdio
+}
+
 // ---- Approval card (overlays any screen; decided with the physical buttons) ----
 // Sized for the 480x480 square AMOLED. The screen auto-rotates upright, so the
 // physically-upper action button = "Aprobar" (top label) and the lower one =

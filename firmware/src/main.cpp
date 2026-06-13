@@ -363,10 +363,12 @@ void loop() {
 
         if (power_hal_pwr_pressed()) {
             if (!idle_consume_wake_press()) {
+                // A stuck notification banner takes priority: PWR clears it.
+                if (ui_banner_visible()) ui_banner_dismiss();
                 // On splash: cycle animations. On the usage view: cycle
                 // screen brightness (single non-splash view, no more screens).
-                if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
-                else                                          brightness_cycle();
+                else if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
+                else                                               brightness_cycle();
             }
         }
 

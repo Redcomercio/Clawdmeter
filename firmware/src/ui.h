@@ -17,6 +17,8 @@ bool ui_approval_active(void); // true while an approval card is showing
 void ui_approval_primary(void);    // PRIMARY (BOOT) pressed while card up
 void ui_approval_secondary(void);  // SECONDARY (KEY) pressed while card up
 void ui_banner_tick(void);   // call each loop; handles the 30s auto-dismiss
+bool ui_banner_visible(void);
+void ui_banner_dismiss(void);  // manual clear of the notification banner + state
 void ui_tick_anim(void);
 void ui_show_screen(screen_t screen);
 void ui_toggle_splash(void);
