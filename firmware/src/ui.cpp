@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "splash.h"
+#include "ble.h"
 #include <lvgl.h>
 #include "logo.h"
 #include "icons.h"
@@ -366,6 +367,132 @@ void ui_banner_tick(void) {
     if (banner_hide_at != 0 && lv_tick_get() >= banner_hide_at) {
         if (banner) lv_obj_add_flag(banner, LV_OBJ_FLAG_HIDDEN);
         banner_hide_at = 0;
+    }
+}
+
+// ---- Swipe-to-approve card (overlays any screen; commits a BLE decision) ----
+// Sized for the 480x480 square AMOLED: a large centered card with big text and
+// a full-width drag area. Right swipe = approve, left swipe = dismiss (terminal).
+static lv_obj_t* card = nullptr;
+static lv_obj_t* card_proj = nullptr;
+static lv_obj_t* card_tool = nullptr;
+static lv_obj_t* card_cmd  = nullptr;
+static lv_obj_t* card_pos  = nullptr;
+static char      card_id[40] = {0};
+static int32_t   card_drag_start_x = 0;
+static int32_t   card_drag_dx = 0;
+static uint32_t  card_hide_at = 0;   // lv_tick when the 30s timeout fires
+
+static void card_finish(const char* decision) {
+    if (card) lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
+    card_hide_at = 0;
+    if (card_id[0]) {
+        ble_send_decision(card_id, decision);
+        card_id[0] = '\0';
+    }
+    splash_unpin_anim();
+}
+
+static void card_press_cb(lv_event_t* e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t* indev = lv_indev_get_act();
+    if (!indev) return;
+    lv_point_t p; lv_indev_get_point(indev, &p);
+    const BoardCaps& c = board_caps();
+    int32_t thresh = c.width * 4 / 10;   // ~40% of width commits
+
+    if (code == LV_EVENT_PRESSED) {
+        card_drag_start_x = p.x;
+        card_drag_dx = 0;
+    } else if (code == LV_EVENT_PRESSING) {
+        card_drag_dx = p.x - card_drag_start_x;
+        lv_obj_align(card, LV_ALIGN_CENTER, card_drag_dx, 0);
+        if (card_drag_dx > 0)
+            lv_obj_set_style_bg_color(card, lv_color_hex(0x1E7B34), 0);   // green = approve
+        else if (card_drag_dx < 0)
+            lv_obj_set_style_bg_color(card, lv_color_hex(0x3a3a44), 0);   // dim = dismiss
+        else
+            lv_obj_set_style_bg_color(card, lv_color_hex(0x202028), 0);
+    } else if (code == LV_EVENT_RELEASED) {
+        if (card_drag_dx >= thresh)       card_finish("approve");
+        else if (card_drag_dx <= -thresh) card_finish("dismiss");
+        else {  // spring back
+            lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+            lv_obj_set_style_bg_color(card, lv_color_hex(0x202028), 0);
+        }
+    }
+}
+
+static void card_ensure(void) {
+    if (card) return;
+    const BoardCaps& c = board_caps();
+    card = lv_obj_create(lv_layer_top());
+    // Large card optimized for the 480x480 square panel, inside the rounded margin.
+    lv_obj_set_size(card, c.width - 48, c.height - 120);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(card, 18, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x202028), 0);
+    lv_obj_set_style_pad_all(card, 18, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(card, card_press_cb, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(card, card_press_cb, LV_EVENT_PRESSING, nullptr);
+    lv_obj_add_event_cb(card, card_press_cb, LV_EVENT_RELEASED, nullptr);
+
+    card_proj = lv_label_create(card);
+    lv_obj_set_style_text_font(card_proj, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(card_proj, lv_color_white(), 0);
+    lv_label_set_long_mode(card_proj, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(card_proj, c.width - 96);
+    lv_obj_align(card_proj, LV_ALIGN_TOP_LEFT, 0, 4);
+
+    card_tool = lv_label_create(card);
+    lv_obj_set_style_text_font(card_tool, &font_styrene_24, 0);
+    lv_obj_set_style_text_color(card_tool, lv_color_hex(0xB8860B), 0);
+    lv_obj_align(card_tool, LV_ALIGN_TOP_LEFT, 0, 52);
+
+    card_cmd = lv_label_create(card);
+    lv_obj_set_style_text_font(card_cmd, &font_styrene_20, 0);
+    lv_obj_set_style_text_color(card_cmd, lv_color_hex(0xcfcfd6), 0);
+    lv_label_set_long_mode(card_cmd, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(card_cmd, c.width - 96);
+    lv_obj_align(card_cmd, LV_ALIGN_TOP_LEFT, 0, 96);
+
+    lv_obj_t* hints = lv_label_create(card);
+    lv_obj_set_style_text_font(hints, &font_styrene_20, 0);
+    lv_obj_set_style_text_color(hints, lv_color_hex(0x9a9aa2), 0);
+    lv_label_set_text(hints, LV_SYMBOL_LEFT " terminal      aprobar " LV_SYMBOL_OK);
+    lv_obj_align(hints, LV_ALIGN_BOTTOM_MID, 0, -4);
+
+    card_pos = lv_label_create(card);
+    lv_obj_set_style_text_font(card_pos, &font_styrene_16, 0);
+    lv_obj_set_style_text_color(card_pos, lv_color_hex(0x9a9aa2), 0);
+    lv_obj_align(card_pos, LV_ALIGN_TOP_RIGHT, 0, 4);
+
+    lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ui_show_approval(const ApprovalRequest* req) {
+    if (!req) return;
+    card_ensure();
+    strlcpy(card_id, req->id, sizeof(card_id));
+    lv_label_set_text(card_proj, req->proj);
+    lv_label_set_text(card_tool, req->tool);
+    lv_label_set_text(card_cmd, req->cmd);
+    char pos[16];
+    snprintf(pos, sizeof(pos), "%u de %u", (unsigned)req->pos, (unsigned)req->total);
+    lv_label_set_text(card_pos, pos);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x202028), 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_HIDDEN);
+    card_hide_at = lv_tick_get() + 30000;  // auto-dismiss in 30s
+    splash_pin_anim("expression surprise");
+}
+
+void ui_approval_tick(void) {
+    if (card_hide_at != 0 && lv_tick_get() >= card_hide_at) {
+        card_finish("dismiss");
     }
 }
 
