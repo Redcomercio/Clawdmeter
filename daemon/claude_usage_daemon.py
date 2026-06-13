@@ -314,6 +314,63 @@ async def poll_api(token: str) -> dict | None:
     return payload
 
 
+EVICT_SECONDS = 600  # forget a session 10 min after its last event
+
+
+class EventTracker:
+    """Pure state machine over normalized session events.
+
+    Feed it event dicts ({"sid","proj","ev","ts"}); it returns the BLE
+    payload to send (or None when nothing should change on the device).
+    """
+
+    def __init__(self) -> None:
+        # sid -> {"proj": str, "pending": bool, "ts": int}
+        self._sessions: dict[str, dict] = {}
+
+    def _evict(self, now: float) -> None:
+        stale = [sid for sid, s in self._sessions.items()
+                 if now - s["ts"] > EVICT_SECONDS]
+        for sid in stale:
+            del self._sessions[sid]
+
+    def _pending_count(self) -> int:
+        return sum(1 for s in self._sessions.values() if s["pending"])
+
+    def _amber_payload(self) -> dict:
+        # Most recently touched pending session names the banner.
+        pend = [s for s in self._sessions.values() if s["pending"]]
+        latest = max(pend, key=lambda s: s["ts"])
+        return {"ev": "approval", "proj": latest["proj"], "n": len(pend)}
+
+    def feed(self, event: dict, now: float) -> dict | None:
+        self._evict(now)
+        sid = event.get("sid", "")
+        proj = event.get("proj", "?")
+        ev = event.get("ev", "")
+        s = self._sessions.setdefault(sid, {"proj": proj, "pending": False, "ts": now})
+        s["proj"] = proj
+        s["ts"] = now
+
+        if ev == "approval":
+            s["pending"] = True
+            return self._amber_payload()
+
+        if ev == "activity":
+            if s["pending"]:
+                s["pending"] = False
+                return self._amber_payload() if self._pending_count() else {"ev": "clear"}
+            return None
+
+        if ev == "done":
+            s["pending"] = False
+            if self._pending_count():
+                return self._amber_payload()
+            return {"ev": "done", "proj": proj}
+
+        return None
+
+
 class Session:
     def __init__(self, client: BleakClient) -> None:
         self.client = client
