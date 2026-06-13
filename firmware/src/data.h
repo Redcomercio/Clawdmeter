@@ -17,3 +17,13 @@ struct SessionEvent {
     uint8_t count;   // pending approvals (>=1 for "approval")
     bool fresh;      // set when a new event arrives, cleared by the UI
 };
+
+struct ApprovalRequest {
+    char id[40];     // request id (session-epoch-pid); echoed back on decision
+    char proj[24];
+    char tool[16];
+    char cmd[64];
+    uint8_t pos;     // 1-based position in the queue
+    uint8_t total;   // queue length
+    bool fresh;
+};

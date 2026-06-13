@@ -130,6 +130,22 @@ static bool parse_event_json(const char* json, SessionEvent* out) {
     return true;
 }
 
+static ApprovalRequest approval_req = {};
+
+// Parse an {"ev":"ask",...} payload into an ApprovalRequest.
+static bool parse_approval_json(const char* json, ApprovalRequest* out) {
+    JsonDocument doc;
+    if (deserializeJson(doc, json)) return false;
+    strlcpy(out->id,   doc["id"]   | "", sizeof(out->id));
+    strlcpy(out->proj, doc["proj"] | "", sizeof(out->proj));
+    strlcpy(out->tool, doc["tool"] | "", sizeof(out->tool));
+    strlcpy(out->cmd,  doc["cmd"]  | "", sizeof(out->cmd));
+    out->pos   = doc["pos"]   | 1;
+    out->total = doc["total"] | 1;
+    out->fresh = true;
+    return true;
+}
+
 // ---- Serial command buffer ----
 #define CMD_BUF_SIZE 64
 static char cmd_buf[CMD_BUF_SIZE];
@@ -376,7 +392,14 @@ void loop() {
 
     if (ble_has_data()) {
         const char* raw = ble_get_data();
-        if (strstr(raw, "\"ev\"") != nullptr) {
+        if (strstr(raw, "\"ask\"") != nullptr) {
+            if (parse_approval_json(raw, &approval_req)) {
+                ui_show_approval(&approval_req);
+                ble_send_ack();
+            } else {
+                ble_send_nack();
+            }
+        } else if (strstr(raw, "\"ev\"") != nullptr) {
             if (parse_event_json(raw, &session_event)) {
                 ui_show_event(&session_event);
                 ble_send_ack();

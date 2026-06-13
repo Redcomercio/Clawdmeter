@@ -263,6 +263,15 @@ void ble_send_nack(void) {
     }
 }
 
+void ble_send_decision(const char* id, const char* decision) {
+    if (state == BLE_STATE_CONNECTED && tx_char) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\"id\":\"%s\",\"d\":\"%s\"}", id, decision);
+        tx_char->setValue(buf);
+        tx_char->notify();
+    }
+}
+
 void ble_request_refresh(void) {
     if (state == BLE_STATE_CONNECTED && req_char) {
         uint8_t v = 0x01;
