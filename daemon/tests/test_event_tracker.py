@@ -46,3 +46,17 @@ def test_eviction_after_ten_minutes():
     t.feed({"sid": "a", "proj": "P", "ev": "approval", "ts": 0}, now=0)
     payload = t.feed({"sid": "b", "proj": "Q", "ev": "done", "ts": 660}, now=660)
     assert payload == {"ev": "done", "proj": "Q"}
+
+
+def test_current_state_amber_when_pending():
+    t = EventTracker()
+    t.feed({"sid": "a", "proj": "P", "ev": "approval", "ts": 100}, now=100)
+    assert t.current_state() == {"ev": "approval", "proj": "P", "n": 1}
+
+
+def test_current_state_clear_when_nothing_pending():
+    t = EventTracker()
+    assert t.current_state() == {"ev": "clear"}
+    t.feed({"sid": "a", "proj": "P", "ev": "approval", "ts": 100}, now=100)
+    t.feed({"sid": "a", "proj": "P", "ev": "done", "ts": 101}, now=101)
+    assert t.current_state() == {"ev": "clear"}

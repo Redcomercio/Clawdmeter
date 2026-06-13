@@ -345,6 +345,16 @@ class EventTracker:
         latest = max(pend, key=lambda s: s["ts"])
         return {"ev": "approval", "proj": latest["proj"], "n": len(pend)}
 
+    def current_state(self) -> dict | None:
+        """The banner payload reflecting current pending sessions, or None.
+
+        Used to re-assert device state on reconnect. Returns the amber
+        payload if any session is pending, else a clear so a stale banner
+        on the device is dismissed."""
+        if self._pending_count():
+            return self._amber_payload()
+        return {"ev": "clear"}
+
     def feed(self, event: dict, now: float) -> dict | None:
         self._evict(now)
         sid = event.get("sid", "")
@@ -389,19 +399,18 @@ def parse_event_line(line: str) -> dict | None:
 
 
 async def watch_events(session: "Session", tracker: EventTracker,
-                       stop_event: asyncio.Event) -> None:
+                       watch_pos: dict, stop_event: asyncio.Event) -> None:
     """Tail EVENT_FILE; push tracker payloads to the device as events arrive."""
-    pos = EVENT_FILE.stat().st_size if EVENT_FILE.exists() else 0
     while not stop_event.is_set() and session.client.is_connected:
         try:
             size = EVENT_FILE.stat().st_size if EVENT_FILE.exists() else 0
-            if size < pos:
-                pos = 0  # file truncated/rotated
-            if size > pos:
+            if size < watch_pos["pos"]:
+                watch_pos["pos"] = 0  # file truncated/rotated
+            if size > watch_pos["pos"]:
                 with EVENT_FILE.open("r") as f:
-                    f.seek(pos)
+                    f.seek(watch_pos["pos"])
                     new = f.read()
-                    pos = f.tell()
+                    watch_pos["pos"] = f.tell()
                 for line in new.splitlines():
                     obj = parse_event_line(line)
                     if obj is None:
@@ -443,7 +452,8 @@ class Session:
             return False
 
 
-async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
+async def connect_and_run(target, stop_event: asyncio.Event,
+                          tracker: EventTracker, watch_pos: dict) -> bool:
     """Connect to a target and poll until disconnected or stopped.
 
     ``target`` is either an address string (Linux) or a BLEDevice carrying
@@ -467,7 +477,11 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
     log("Connected")
     session = Session(client)
     await session.setup_refresh_subscription()
-    tracker = EventTracker()
+
+    # Re-assert the current banner state so a reconnected device is in sync.
+    state = tracker.current_state()
+    if state is not None:
+        await session.write_payload(state)
 
     used = {"ok": False}
 
@@ -490,11 +504,24 @@ async def connect_and_run(target, stop_event: asyncio.Event) -> bool:
             except asyncio.TimeoutError:
                 pass
 
+    poll_task = asyncio.create_task(poll_loop())
+    watch_task = asyncio.create_task(
+        watch_events(session, tracker, watch_pos, stop_event))
     try:
-        await asyncio.gather(
-            poll_loop(),
-            watch_events(session, tracker, stop_event),
-        )
+        done, pending = await asyncio.wait(
+            {poll_task, watch_task}, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        for t in pending:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+        # Surface any real exception from the finished task(s).
+        for t in done:
+            exc = t.exception()
+            if exc is not None:
+                log(f"Task error: {exc}")
     finally:
         try:
             await client.disconnect()
@@ -529,6 +556,9 @@ async def main() -> None:
     except OSError as e:
         log(f"Could not reset event file: {e}")
 
+    tracker = EventTracker()
+    watch_pos = {"pos": 0}  # persists file read position across reconnects
+
     backoff = 1
     skip_addr: str | None = None  # macOS: a peripheral to skip for one cycle
     while not stop_event.is_set():
@@ -546,7 +576,7 @@ async def main() -> None:
             continue
 
         addr = target if isinstance(target, str) else target.address
-        ok = await connect_and_run(target, stop_event)
+        ok = await connect_and_run(target, stop_event, tracker, watch_pos)
         if not ok:
             if sys.platform == "darwin":
                 # No string cache to drop; instead skip this stale handle on
