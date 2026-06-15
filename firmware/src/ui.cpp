@@ -360,6 +360,7 @@ void ui_show_event(const SessionEvent* ev) {
         banner_hide_at = lv_tick_get() + 30000;  // auto-dismiss in 30s
         approval_on = false;  // nothing pending when a done payload arrives
         cloud_update_visibility();
+        splash_pin_anim_for("dance bounce", 2500);  // festejo: tarea terminada
         return;
     }
 }
@@ -461,6 +462,8 @@ static void card_finish(const char* decision) {
         card_id[0] = '\0';
     }
     splash_unpin_anim();
+    if (strcmp(decision, "approve") == 0)
+        splash_pin_anim_for("expression wink", 1500);  // contento al aprobar
     confirm_flash(decision);        // green "Aprobado" = keystroke-sent feedback
 }
 
