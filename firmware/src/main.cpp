@@ -406,6 +406,7 @@ void loop() {
     check_serial_cmd();
     ui_banner_tick();
     ui_approval_tick();
+    ui_milestone_tick();
 
     if (ble_has_data()) {
         const char* raw = ble_get_data();

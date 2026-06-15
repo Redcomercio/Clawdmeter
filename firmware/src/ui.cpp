@@ -478,6 +478,92 @@ void ui_hide_approval(void) {
     splash_unpin_anim();
 }
 
+// ---- Milestone celebration: burst + proud state + tappable replay badge ----
+static lv_obj_t* mile_toast = nullptr;
+static lv_obj_t* mile_toast_lbl = nullptr;
+static lv_obj_t* mile_badge = nullptr;
+static lv_obj_t* mile_badge_lbl = nullptr;
+static char      mile_label[40] = {0};
+static char      mile_anim[20] = {0};
+static uint32_t  mile_toast_hide_at = 0;   // burst toast end
+static uint32_t  mile_proud_until = 0;     // proud-state end
+
+static void mile_burst(void) {
+    splash_pin_anim_for(mile_anim, 5000);                 // festive dance ~5s
+    lv_label_set_text(mile_toast_lbl, mile_label);
+    lv_obj_clear_flag(mile_toast, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(mile_toast);
+    mile_toast_hide_at = lv_tick_get() + 5000;
+    // proud window: random 30–60 min (gentle sway), badge stays visible.
+    mile_proud_until = lv_tick_get() + (uint32_t)random(1800000, 3600001);
+}
+
+static void mile_badge_tap_cb(lv_event_t* e) {
+    LV_UNUSED(e);
+    if (mile_label[0]) mile_burst();   // replay celebration on demand
+}
+
+static void mile_ensure(void) {
+    if (mile_toast) return;
+    const BoardCaps& c = board_caps();
+    // Festive toast — wide strip near the top.
+    mile_toast = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(mile_toast, c.width - 40, 64);
+    lv_obj_align(mile_toast, LV_ALIGN_TOP_MID, 0, 24);
+    lv_obj_set_style_radius(mile_toast, 14, 0);
+    lv_obj_set_style_border_width(mile_toast, 0, 0);
+    lv_obj_set_style_bg_color(mile_toast, lv_color_hex(0x7a5cff), 0);  // festive purple
+    lv_obj_clear_flag(mile_toast, LV_OBJ_FLAG_SCROLLABLE);
+    mile_toast_lbl = lv_label_create(mile_toast);
+    lv_obj_set_style_text_font(mile_toast_lbl, &font_styrene_24, 0);
+    lv_obj_set_style_text_color(mile_toast_lbl, lv_color_white(), 0);
+    lv_label_set_long_mode(mile_toast_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(mile_toast_lbl, c.width - 72);
+    lv_obj_center(mile_toast_lbl);
+    lv_obj_add_flag(mile_toast, LV_OBJ_FLAG_HIDDEN);
+
+    // Persistent tappable badge — bottom-left corner.
+    mile_badge = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(mile_badge, 64, 64);
+    lv_obj_align(mile_badge, LV_ALIGN_BOTTOM_LEFT, 16, -16);
+    lv_obj_set_style_radius(mile_badge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(mile_badge, 0, 0);
+    lv_obj_set_style_bg_color(mile_badge, lv_color_hex(0x7a5cff), 0);
+    lv_obj_clear_flag(mile_badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(mile_badge, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(mile_badge, mile_badge_tap_cb, LV_EVENT_CLICKED, nullptr);
+    mile_badge_lbl = lv_label_create(mile_badge);
+    lv_obj_set_style_text_font(mile_badge_lbl, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(mile_badge_lbl, lv_color_white(), 0);
+    lv_label_set_text(mile_badge_lbl, LV_SYMBOL_OK);  // trophy stand-in
+    lv_obj_center(mile_badge_lbl);
+    lv_obj_add_flag(mile_badge, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ui_show_milestone(const Milestone* m) {
+    if (!m) return;
+    mile_ensure();
+    strlcpy(mile_label, m->label, sizeof(mile_label));
+    strlcpy(mile_anim, m->anim[0] ? m->anim : "dance bounce", sizeof(mile_anim));
+    lv_obj_clear_flag(mile_badge, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(mile_badge);
+    mile_burst();
+}
+
+void ui_milestone_tick(void) {
+    uint32_t now = lv_tick_get();
+    if (mile_toast_hide_at != 0 && now >= mile_toast_hide_at) {
+        if (mile_toast) lv_obj_add_flag(mile_toast, LV_OBJ_FLAG_HIDDEN);
+        mile_toast_hide_at = 0;
+        // After the burst, hold a calm-happy proud expression for the window.
+        if (mile_proud_until > now) splash_pin_anim_for("dance sway", mile_proud_until - now);
+    }
+    if (mile_proud_until != 0 && now >= mile_proud_until) {
+        mile_proud_until = 0;
+        if (mile_badge) lv_obj_add_flag(mile_badge, LV_OBJ_FLAG_HIDDEN);  // badge decays
+    }
+}
+
 static void card_ensure(void) {
     if (card) return;
     const BoardCaps& c = board_caps();
