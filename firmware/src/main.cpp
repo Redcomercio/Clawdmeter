@@ -88,8 +88,21 @@ static void my_touch_cb(lv_indev_t* indev, lv_indev_data_t* data) {
     }
 
     if (pressed) {
-        data->point.x = x;
-        data->point.y = y;
+        // The display is rotated by CPU pixel-remap at flush, but touch comes in
+        // raw panel coordinates. Remap by the current quadrant so it lands on the
+        // rotated content. Square panels (480x480); AMOLED-1.8 has rotation
+        // disabled so quadrant is always 0 (identity). Per-quadrant axis/sign
+        // tuned on hardware.
+        const int32_t S = board_caps().width;
+        uint16_t rx = x, ry = y;
+        switch (imu_hal_rotation_quadrant()) {
+        case 1: rx = y;         ry = S - 1 - x; break;
+        case 2: rx = S - 1 - x; ry = S - 1 - y; break;
+        case 3: rx = S - 1 - y; ry = x;         break;
+        default: break;  // 0
+        }
+        data->point.x = rx;
+        data->point.y = ry;
         data->state = LV_INDEV_STATE_PRESSED;
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
@@ -380,6 +393,8 @@ void loop() {
                 if (ui_approval_middle()) { /* consumed */ }
                 // A stuck notification banner takes priority: PWR clears it.
                 else if (ui_banner_visible()) ui_banner_dismiss();
+                // A milestone badge up: PWR replays the celebration.
+                else if (ui_milestone_replay()) { /* consumed */ }
                 // On splash: cycle animations. On the usage view: cycle
                 // screen brightness (single non-splash view, no more screens).
                 else if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();
