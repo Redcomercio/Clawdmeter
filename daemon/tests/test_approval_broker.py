@@ -65,3 +65,22 @@ def test_decision_for_unknown_id_is_ignored(tmp_path):
     b = ApprovalBroker(appdir)
     b.decide("ghost", "approve")
     assert not (appdir / "ghost.res").exists()
+
+
+def test_list_returns_queue_items(tmp_path):
+    appdir = tmp_path / "approve"; appdir.mkdir()
+    b = ApprovalBroker(appdir)
+    write_req(appdir, "a", proj="A", tool="Bash")
+    write_req(appdir, "b", proj="B", tool="Edit")
+    b.scan()  # populate the queue order
+    items = b.list()
+    assert items == [{"id": "a", "proj": "A", "tool": "Bash"},
+                     {"id": "b", "proj": "B", "tool": "Edit"}]
+
+
+def test_list_drops_after_clear(tmp_path):
+    appdir = tmp_path / "approve"; appdir.mkdir()
+    b = ApprovalBroker(appdir)
+    write_req(appdir, "a"); b.scan()
+    b.decide("a", "clear")
+    assert b.list() == []

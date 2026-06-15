@@ -489,6 +489,7 @@ async def run_broker(session: "Session", broker: ApprovalBroker,
                      stop_event: asyncio.Event) -> None:
     """Scan the approve dir; send the head request; expire stale cards at 60s."""
     sent_at = {"t": 0.0, "id": None}
+    last_list = {"v": None}
     while not stop_event.is_set() and session.client.is_connected:
         try:
             payload = broker.scan()
@@ -502,6 +503,10 @@ async def run_broker(session: "Session", broker: ApprovalBroker,
                 sent_at = {"t": 0.0, "id": None}
             elif broker.current_id() is None:
                 sent_at = {"t": 0.0, "id": None}
+            items = broker.list()
+            if items != last_list["v"]:
+                last_list["v"] = items
+                await session.write_payload({"ev": "notif", "items": items})
         except (OSError, BleakError) as e:
             log(f"Broker error: {e}")
         try:
@@ -534,7 +539,7 @@ class Session:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return
         rid, d = msg.get("id"), msg.get("d")
-        if rid and d in ("approve", "dismiss") and getattr(self, "_broker", None):
+        if rid and d in ("approve", "dismiss", "clear") and getattr(self, "_broker", None):
             log(f"Swipe decision {d} for {rid}")
             self._broker.decide(rid, d)
 

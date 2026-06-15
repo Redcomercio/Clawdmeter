@@ -79,3 +79,16 @@ class ApprovalBroker:
         if self._head_sent == head:
             self._head_sent = None
         return head
+
+    def list(self) -> list[dict]:
+        """Current queue as rows for the notification center (in order)."""
+        self._refresh_queue()
+        rows = []
+        for rid in self._queue:
+            try:
+                req = json.loads((self.appdir / f"{rid}.req").read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            rows.append({"id": rid, "proj": req.get("proj", "?"),
+                         "tool": req.get("tool", "")})
+        return rows
