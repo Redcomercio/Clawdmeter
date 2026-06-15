@@ -25,6 +25,7 @@ struct ApprovalRequest {
     char cmd[64];
     uint8_t pos;     // 1-based position in the queue
     uint8_t total;   // queue length
+    uint8_t opts;    // prompt option count: 2 (Yes/No) or 3 (Yes/Yes-all/No)
     bool fresh;
 };
 

@@ -142,6 +142,7 @@ static bool parse_approval_json(const char* json, ApprovalRequest* out) {
     strlcpy(out->cmd,  doc["cmd"]  | "", sizeof(out->cmd));
     out->pos   = doc["pos"]   | 1;
     out->total = doc["total"] | 1;
+    out->opts  = doc["opts"]  | 2;
     out->fresh = true;
     return true;
 }
@@ -375,8 +376,10 @@ void loop() {
 
         if (power_hal_pwr_pressed()) {
             if (!idle_consume_wake_press()) {
+                // A 3-option approval card: PWR = "Sí, todo" (key 2).
+                if (ui_approval_middle()) { /* consumed */ }
                 // A stuck notification banner takes priority: PWR clears it.
-                if (ui_banner_visible()) ui_banner_dismiss();
+                else if (ui_banner_visible()) ui_banner_dismiss();
                 // On splash: cycle animations. On the usage view: cycle
                 // screen brightness (single non-splash view, no more screens).
                 else if (ui_get_current_screen() == SCREEN_SPLASH) splash_next();

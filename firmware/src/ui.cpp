@@ -399,10 +399,14 @@ static lv_obj_t* card_proj = nullptr;
 static lv_obj_t* card_tool = nullptr;
 static lv_obj_t* card_cmd  = nullptr;
 static lv_obj_t* card_pos  = nullptr;
+static lv_obj_t* card_yes_lbl = nullptr;  // top    → key '1' (Yes once)
+static lv_obj_t* card_mid_lbl = nullptr;  // middle → key '2' (Yes allow all; 3-opt only)
+static lv_obj_t* card_no_lbl  = nullptr;  // bottom → key '2'(2-opt) / '3'(3-opt) (No)
 static char      card_id[40] = {0};
 static uint32_t  card_hide_at = 0;     // lv_tick when the 30s timeout fires
 static bool      card_visible = false;
 static uint8_t   card_quadrant = 0;    // rotation quadrant frozen at show time
+static uint8_t   card_opts = 2;        // 2 (Yes/No) or 3 (Yes/Yes-all/No)
 
 // At quadrant 0 the PRIMARY (BOOT) button is the gravity-upper one; at 180°
 // (quadrant 2) the column flips so SECONDARY is upper. Quadrants 1/3 (buttons
@@ -430,16 +434,22 @@ static void confirm_ensure(void) {
     lv_obj_add_flag(confirm, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void confirm_flash(const char* decision) {
+// Flash feedback for the digit typed: 1=Sí (green), 2=Permitir todo (green),
+// 3=No (red). digit 0 = silent dismiss (no flash).
+static void confirm_flash_digit(uint8_t digit) {
     confirm_ensure();
-    if (strcmp(decision, "approve") == 0) {
+    if (digit == 1) {
         lv_obj_set_style_bg_color(confirm, lv_color_hex(0x1E7B34), 0);   // green
         lv_obj_set_style_text_color(confirm_lbl, lv_color_white(), 0);
-        lv_label_set_text(confirm_lbl, LV_SYMBOL_OK "  Aprobado");
+        lv_label_set_text(confirm_lbl, LV_SYMBOL_OK "  Sí");
+    } else if (digit == 2) {
+        lv_obj_set_style_bg_color(confirm, lv_color_hex(0x1E7B34), 0);   // green
+        lv_obj_set_style_text_color(confirm_lbl, lv_color_white(), 0);
+        lv_label_set_text(confirm_lbl, LV_SYMBOL_OK "  Permitir todo");
     } else {
-        lv_obj_set_style_bg_color(confirm, lv_color_hex(0xD9A521), 0);   // yellow
-        lv_obj_set_style_text_color(confirm_lbl, lv_color_hex(0x202028), 0);
-        lv_label_set_text(confirm_lbl, "Terminal");
+        lv_obj_set_style_bg_color(confirm, lv_color_hex(0xB23b3b), 0);   // red
+        lv_obj_set_style_text_color(confirm_lbl, lv_color_white(), 0);
+        lv_label_set_text(confirm_lbl, "No");
     }
     lv_obj_center(confirm_lbl);
     lv_obj_move_foreground(confirm);
@@ -447,24 +457,34 @@ static void confirm_flash(const char* decision) {
     confirm_hide_at = lv_tick_get() + 1500;
 }
 
-static void card_finish(const char* decision) {
+// Hide the card + release pins, without typing anything (timeout / daemon clear).
+static void card_dismiss_silent(void) {
     if (card) lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
     card_hide_at = 0;
     card_visible = false;
-    imu_hal_lock_rotation(false);   // resume auto-rotation
-    if (strcmp(decision, "approve") == 0) {
-        // Type "1" (approve once) into whatever terminal has OS focus.
-        ble_keyboard_press(0x1E, 0);   // HID usage 0x1E = '1'
-        ble_keyboard_release();
-    }
+    card_id[0] = '\0';
+    imu_hal_lock_rotation(false);
+    splash_unpin_anim();
+}
+
+// A button answered the prompt: type the digit (1/2/3) into the focused terminal,
+// tell the daemon to advance the queue, flash feedback.
+static void card_answer(uint8_t digit) {
+    if (!card_visible) return;
+    if (card) lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
+    card_hide_at = 0;
+    card_visible = false;
+    imu_hal_lock_rotation(false);
+    uint8_t key = (digit == 1) ? 0x1E : (digit == 2) ? 0x1F : 0x20;  // '1'/'2'/'3'
+    ble_keyboard_press(key, 0);
+    ble_keyboard_release();
     if (card_id[0]) {
-        ble_send_decision(card_id, decision);   // tells the daemon to advance the queue
+        ble_send_decision(card_id, digit == 3 ? "dismiss" : "approve");  // advances queue
         card_id[0] = '\0';
     }
     splash_unpin_anim();
-    if (strcmp(decision, "approve") == 0)
-        splash_pin_anim_for("expression wink", 1500);  // contento al aprobar
-    confirm_flash(decision);        // green "Aprobado" = keystroke-sent feedback
+    if (digit != 3) splash_pin_anim_for("expression wink", 1500);  // contento
+    confirm_flash_digit(digit);
 }
 
 // Daemon-initiated clear (prompt resolved in the terminal, or timed out at 60s).
@@ -577,21 +597,26 @@ static void card_ensure(void) {
     lv_obj_set_style_pad_all(card, 16, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Action labels live on the RIGHT edge, aligned to the two outer physical
-    // buttons (upper third = upper button, lower third = lower button; the
-    // middle button sits between them). Upper = Continuar (approve), lower =
-    // Terminal (defer to the terminal).
-    lv_obj_t* top = lv_label_create(card);
-    lv_obj_set_style_text_font(top, &font_styrene_28, 0);
-    lv_obj_set_style_text_color(top, lv_color_hex(0x35c46a), 0);
-    lv_label_set_text(top, "Continuar  " LV_SYMBOL_RIGHT);
-    lv_obj_align(top, LV_ALIGN_RIGHT_MID, 0, -120);
+    // Action labels on the RIGHT edge, aligned to the 3 physical buttons:
+    // top = Sí (key 1), middle = Sí, todo (key 2, 3-option only), bottom = No
+    // (key 2 for 2-option prompts, key 3 for 3-option). Middle hidden for 2-opt.
+    card_yes_lbl = lv_label_create(card);
+    lv_obj_set_style_text_font(card_yes_lbl, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(card_yes_lbl, lv_color_hex(0x35c46a), 0);
+    lv_label_set_text(card_yes_lbl, "Sí  " LV_SYMBOL_RIGHT);
+    lv_obj_align(card_yes_lbl, LV_ALIGN_RIGHT_MID, 0, -150);
 
-    lv_obj_t* bot = lv_label_create(card);
-    lv_obj_set_style_text_font(bot, &font_styrene_28, 0);
-    lv_obj_set_style_text_color(bot, lv_color_hex(0x9a9aa2), 0);
-    lv_label_set_text(bot, "Terminal  " LV_SYMBOL_RIGHT);
-    lv_obj_align(bot, LV_ALIGN_RIGHT_MID, 0, 120);
+    card_mid_lbl = lv_label_create(card);
+    lv_obj_set_style_text_font(card_mid_lbl, &font_styrene_24, 0);
+    lv_obj_set_style_text_color(card_mid_lbl, lv_color_hex(0xB8860B), 0);
+    lv_label_set_text(card_mid_lbl, "Sí, todo  " LV_SYMBOL_RIGHT);
+    lv_obj_align(card_mid_lbl, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    card_no_lbl = lv_label_create(card);
+    lv_obj_set_style_text_font(card_no_lbl, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(card_no_lbl, lv_color_hex(0x9a9aa2), 0);
+    lv_label_set_text(card_no_lbl, "No  " LV_SYMBOL_RIGHT);
+    lv_obj_align(card_no_lbl, LV_ALIGN_RIGHT_MID, 0, 150);
 
     // Content (project / tool / command) fills the left, clear of the buttons.
     int32_t content_w = c.width - 72;
@@ -633,6 +658,9 @@ void ui_show_approval(const ApprovalRequest* req) {
     char pos[16];
     snprintf(pos, sizeof(pos), "%u de %u", (unsigned)req->pos, (unsigned)req->total);
     lv_label_set_text(card_pos, pos);
+    card_opts = (req->opts == 3) ? 3 : 2;
+    if (card_opts == 3) lv_obj_clear_flag(card_mid_lbl, LV_OBJ_FLAG_HIDDEN);
+    else                lv_obj_add_flag(card_mid_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_HIDDEN);
     card_hide_at = lv_tick_get() + 30000;  // auto-dismiss in 30s
     card_visible = true;
@@ -643,22 +671,31 @@ void ui_show_approval(const ApprovalRequest* req) {
 
 bool ui_approval_active(void) { return card_visible; }
 
-// Physical buttons resolve the card. The upper button approves; the lower one
-// defers to the terminal. Which physical button is upper comes from the frozen
-// quadrant (see primary_is_upper).
+// Top button = Sí (key 1); bottom button = No (key 2 for 2-opt, key 3 for 3-opt).
+// Which physical button is "top" comes from the frozen quadrant (primary_is_upper).
+static uint8_t bottom_digit(void) { return card_opts == 3 ? 3 : 2; }
+
 void ui_approval_primary(void) {
     if (!card_visible) return;
-    card_finish(primary_is_upper(card_quadrant) ? "approve" : "dismiss");
+    card_answer(primary_is_upper(card_quadrant) ? 1 : bottom_digit());
 }
 
 void ui_approval_secondary(void) {
     if (!card_visible) return;
-    card_finish(primary_is_upper(card_quadrant) ? "dismiss" : "approve");
+    card_answer(primary_is_upper(card_quadrant) ? bottom_digit() : 1);
+}
+
+// Middle (PWR) button while a 3-option card is up → key '2' (Yes, allow all).
+// Returns true if it consumed the press (so the caller skips normal PWR action).
+bool ui_approval_middle(void) {
+    if (!card_visible || card_opts != 3) return false;
+    card_answer(2);
+    return true;
 }
 
 void ui_approval_tick(void) {
     if (card_hide_at != 0 && lv_tick_get() >= card_hide_at) {
-        card_finish("dismiss");
+        card_dismiss_silent();   // timeout: no keystroke, just clear
     }
     if (confirm_hide_at != 0 && lv_tick_get() >= confirm_hide_at) {
         if (confirm) lv_obj_add_flag(confirm, LV_OBJ_FLAG_HIDDEN);

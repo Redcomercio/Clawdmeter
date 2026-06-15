@@ -15,6 +15,15 @@ def _is_dangerous(cmd: str) -> bool:
     return bool(cmd and _DANGER.search(cmd))
 
 
+# File-editing tools show a 3-option prompt (Yes / Yes-allow-all / No); other
+# tools (Bash, etc.) show a 2-option prompt (Yes / No).
+_THREE_OPTION_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+
+
+def _option_count(tool: str) -> int:
+    return 3 if tool in _THREE_OPTION_TOOLS else 2
+
+
 class ApprovalBroker:
     def __init__(self, appdir: Path) -> None:
         self.appdir = Path(appdir)
@@ -45,10 +54,12 @@ class ApprovalBroker:
         except (OSError, json.JSONDecodeError):
             return None
         self._head_sent = head
+        tool = req.get("tool", "")
         return {"ev": "ask", "id": head, "proj": req.get("proj", "?"),
-                "tool": req.get("tool", ""), "cmd": req.get("cmd", ""),
+                "tool": tool, "cmd": req.get("cmd", ""),
                 "pos": 1, "total": len(self._queue),
-                "danger": _is_dangerous(req.get("cmd", ""))}
+                "danger": _is_dangerous(req.get("cmd", "")),
+                "opts": _option_count(tool)}
 
     def decide(self, rid: str, decision: str) -> None:
         """Drop a decided request (the device self-hides; we just advance)."""

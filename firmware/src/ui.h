@@ -16,6 +16,7 @@ void ui_approval_tick(void);   // call each loop; handles the 30s auto-dismiss
 bool ui_approval_active(void); // true while an approval card is showing
 void ui_approval_primary(void);    // PRIMARY (BOOT) pressed while card up
 void ui_approval_secondary(void);  // SECONDARY (KEY) pressed while card up
+bool ui_approval_middle(void);     // PWR pressed while 3-option card up → key '2'
 void ui_hide_approval(void);       // daemon-initiated clear (clear-ask payload)
 void ui_show_milestone(const Milestone* m);
 void ui_milestone_tick(void);      // call each loop; burst/proud timers

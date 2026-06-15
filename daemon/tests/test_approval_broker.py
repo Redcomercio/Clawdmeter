@@ -14,7 +14,7 @@ def test_scan_picks_up_request_and_builds_ask(tmp_path):
     write_req(appdir, "a")
     sendable = b.scan()
     assert sendable == {"ev": "ask", "id": "a", "proj": "P", "tool": "Bash",
-                        "cmd": "ls", "pos": 1, "total": 1, "danger": False}
+                        "cmd": "ls", "pos": 1, "total": 1, "danger": False, "opts": 2}
 
 
 def test_only_head_is_sent_with_queue_positions(tmp_path):
