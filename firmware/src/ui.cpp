@@ -596,7 +596,7 @@ static uint8_t   notif_count = 0;
 
 static void notif_x_cb(lv_event_t* e) {
     const char* id = (const char*)lv_event_get_user_data(e);
-    if (id && id[0]) ble_send_decision(id, "clear");  // daemon drops it; no keystroke
+    if (id && id[0]) ble_send_decision(id, "notifclear");  // daemon clears that session's pending
     lv_obj_t* row = (lv_obj_t*)lv_obj_get_parent(lv_event_get_target_obj(e));
     if (row) lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
 }

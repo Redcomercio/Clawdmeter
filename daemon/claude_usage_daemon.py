@@ -364,6 +364,20 @@ class EventTracker:
             return self._amber_payload()
         return {"ev": "clear"}
 
+    def pending_list(self) -> list[dict]:
+        """Rows for the notification center: one per pending session."""
+        return [{"id": sid, "proj": s["proj"], "tool": "aprobación"}
+                for sid, s in self._sessions.items() if s["pending"]]
+
+    def clear(self, sid: str) -> bool:
+        """Clear one session's pending flag (notification-center delete).
+        Returns True if it was pending."""
+        s = self._sessions.get(sid)
+        if s and s["pending"]:
+            s["pending"] = False
+            return True
+        return False
+
     def feed(self, event: dict, now: float) -> dict | None:
         self._evict(now)
         sid = event.get("sid", "")
@@ -414,6 +428,7 @@ async def watch_events(session: "Session", tracker: EventTracker,
     Also refreshes the device-ready flag every tick (~1s) so the PreToolUse hook
     (which treats it as fresh for 10s) reliably sees the device as connected —
     the 60s usage poll alone would let it go stale between polls."""
+    last_notif = None
     while not stop_event.is_set() and session.client.is_connected:
         touch_device_ready()
         try:
@@ -444,6 +459,19 @@ async def watch_events(session: "Session", tracker: EventTracker,
                         brk = getattr(session, "_broker", None)
                         if brk and brk.clear_current():
                             await session.write_payload({"ev": "clear-ask"})
+            # Notification center: send the pending list whenever it changes
+            # (also covers connect: None -> []).
+            nl = tracker.pending_list()
+            if nl != last_notif:
+                last_notif = nl
+                await session.write_payload({"ev": "notif", "items": nl})
+            # A device-initiated notif clear has no event to drive the banner —
+            # re-assert it here.
+            if getattr(session, "_notif_dirty", False):
+                session._notif_dirty = False
+                state = tracker.current_state()
+                if state is not None:
+                    await session.write_payload(state)
         except (OSError, BleakError) as e:
             log(f"Event watch error: {e}")
         try:
@@ -489,7 +517,6 @@ async def run_broker(session: "Session", broker: ApprovalBroker,
                      stop_event: asyncio.Event) -> None:
     """Scan the approve dir; send the head request; expire stale cards at 60s."""
     sent_at = {"t": 0.0, "id": None}
-    last_list = {"v": None}
     while not stop_event.is_set() and session.client.is_connected:
         try:
             payload = broker.scan()
@@ -503,10 +530,6 @@ async def run_broker(session: "Session", broker: ApprovalBroker,
                 sent_at = {"t": 0.0, "id": None}
             elif broker.current_id() is None:
                 sent_at = {"t": 0.0, "id": None}
-            items = broker.list()
-            if items != last_list["v"]:
-                last_list["v"] = items
-                await session.write_payload({"ev": "notif", "items": items})
         except (OSError, BleakError) as e:
             log(f"Broker error: {e}")
         try:
@@ -533,13 +556,23 @@ class Session:
     def attach_broker(self, broker) -> None:
         self._broker = broker
 
+    def attach_tracker(self, tracker) -> None:
+        self._tracker = tracker
+
     def _on_tx(self, _char, data: bytearray) -> None:
         try:
             msg = json.loads(bytes(data).decode())
         except (UnicodeDecodeError, json.JSONDecodeError):
             return
         rid, d = msg.get("id"), msg.get("d")
-        if rid and d in ("approve", "dismiss", "clear") and getattr(self, "_broker", None):
+        if not rid:
+            return
+        if d == "notifclear" and getattr(self, "_tracker", None):
+            # Notification-center delete: clear that session's pending banner.
+            log(f"Notif clear for {rid}")
+            if self._tracker.clear(rid):
+                self._notif_dirty = True   # watch loop re-asserts banner + list
+        elif d in ("approve", "dismiss", "clear") and getattr(self, "_broker", None):
             log(f"Swipe decision {d} for {rid}")
             self._broker.decide(rid, d)
 
@@ -587,6 +620,7 @@ async def connect_and_run(target, stop_event: asyncio.Event,
     await session.setup_refresh_subscription()
     broker = ApprovalBroker(APPROVE_DIR)
     session.attach_broker(broker)
+    session.attach_tracker(tracker)
     await session.setup_tx_subscription()
     touch_device_ready()
 
