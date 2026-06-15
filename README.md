@@ -338,8 +338,10 @@ lv_font_conv --font assets/TiemposText-400-Regular.otf -r 0x20-0x7E \
   -o firmware/src/font_tiempos_56.c --lv-include "lvgl.h"
 
 # Styrene B (large numbers 48, panel labels 28, small text 24, minimal 20)
+# Range includes Latin-1 Supplement (0xA0-0xFF) so Spanish accents render
+# (á é í ó ú ñ ü ¿ ¡) — these fonts carry dynamic UI text like "Sí" / "aprobación".
 for size in 48 28 24 20; do
-  lv_font_conv --font assets/StyreneB-Regular.otf -r 0x20-0x7E \
+  lv_font_conv --font assets/StyreneB-Regular.otf -r 0x20-0x7E,0xA0-0xFF \
     --size $size --format lvgl --bpp 4 --no-compress \
     -o firmware/src/font_styrene_${size}.c --lv-include "lvgl.h"
 done
