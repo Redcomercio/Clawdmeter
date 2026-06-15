@@ -37,4 +37,19 @@ mkdir -p "$(dirname "$event_file")" 2>/dev/null
 printf '{"ts":%s,"sid":"%s","proj":"%s","ev":"%s"}\n' \
     "$ts" "$sid" "$proj" "$ev" >> "$event_file" 2>/dev/null
 
+# Extra signal: a Bash `git commit` also emits a `commit` event (for milestones).
+if [ "$event_name" = "PostToolUse" ]; then
+    if command -v jq >/dev/null 2>&1; then
+        tool="$(printf '%s' "$payload" | jq -r '.tool_name // ""' 2>/dev/null)"
+        cmd="$(printf '%s' "$payload" | jq -r '.tool_input.command // ""' 2>/dev/null)"
+    else
+        tool="$(printf '%s' "$payload" | grep -o '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:[[:space:]]*"//;s/"$//')"
+        cmd="$(printf '%s' "$payload" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:[[:space:]]*"//;s/"$//')"
+    fi
+    if [ "$tool" = "Bash" ] && printf '%s' "$cmd" | grep -q 'git commit'; then
+        printf '{"ts":%s,"sid":"%s","proj":"%s","ev":"commit"}\n' \
+            "$ts" "$sid" "$proj" >> "$event_file" 2>/dev/null
+    fi
+fi
+
 exit 0
