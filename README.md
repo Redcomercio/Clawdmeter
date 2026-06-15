@@ -215,16 +215,24 @@ Code so it reloads settings. The daemon picks up events within ~1 second.
 
 ## Approve from the device (macOS)
 
-With the daemon connected, a `PreToolUse` hook lets you approve tool permissions
-from the device. When a session asks to run a tool, Clawdmeter shows an approval
-card (project / tool / command) and you decide with the side buttons:
+With the daemon connected, a `PreToolUse` hook **mirrors** tool-permission prompts
+on the device. The prompt always appears in the **terminal** as usual; Clawdmeter
+also shows an approval card (project / tool / command). You answer in either place:
 
-- **Upper button (Continuar)** → approve; the tool runs.
-- **Lower button (Terminal)** → defer to the normal terminal prompt (it never
-  denies). Same result on timeout (~30 s) or if the device is disconnected.
+- **Upper button (Continuar)** → the device **types `1` into the focused terminal**
+  over BLE-HID (approve once); a green **Aprobado** flash confirms the keystroke.
+- **Lower button (Terminal)** → just dismisses the device card; you answer in the
+  terminal yourself.
+- An abandoned card (e.g. you closed the terminal) clears itself after **60 s**, or
+  when that session resolves the prompt.
 
-A full-screen confirmation flashes after you press: green **Aprobado** or yellow
-**Terminal**.
+The hook is **non-blocking**: it returns `ask` immediately so the terminal prompt
+is never delayed; the device is purely a remote keyboard + mirror.
+
+**Caveats (macOS):** the HID keystroke goes to the OS **active window**, so the
+terminal must be focused when you press Continuar. Typing in the terminal exactly
+as the prompt appears can collide with the keystroke. Reliable for the normal
+"1 = Yes (once)" option (~95%).
 
 Add the `PreToolUse` hook to `~/.claude/settings.json` (merge into `hooks`):
 
@@ -233,8 +241,7 @@ Add the `PreToolUse` hook to `~/.claude/settings.json` (merge into `hooks`):
   "hooks": {
     "PreToolUse": [
       { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*", "hooks": [
-        { "type": "command", "timeout": 35,
-          "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-approve-hook.sh" } ] }
+        { "type": "command", "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-approve-hook.sh" } ] }
     ]
   }
 }
@@ -242,15 +249,10 @@ Add the `PreToolUse` hook to `~/.claude/settings.json` (merge into `hooks`):
 
 **Use a scoped `matcher`** (above) so the hook only fires for action tools. Do NOT
 register it with `"matcher": ""` — that fires the hook for *every* tool (including
-`AskUserQuestion`, `Read`, etc.), and the device would intercept things like
-multiple-choice questions, blocking the terminal. As a safety net the hook script
-itself also returns `ask` instantly for any non-action tool, but the matcher avoids
-firing it at all.
-
-The hook only blocks while the device is connected (it checks a `device-ready`
-flag the daemon refreshes); otherwise it returns instantly and tool permissions
-behave normally. The `"timeout": 35` is required — it must exceed the device's
-30 s decision window and avoids a known no-timeout `PreToolUse` issue.
+`AskUserQuestion`, `Read`, etc.). As a safety net the hook script also returns
+`ask` instantly for any non-action tool, but the matcher avoids firing it at all.
+The hook only mirrors to the device while it's connected (a fresh `device-ready`
+flag); otherwise it returns instantly and prompts behave exactly as normal.
 
 ## How it works
 
