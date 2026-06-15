@@ -183,6 +183,20 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v Clawdmeter /f
 | `Connection failed` | Toggle Windows Bluetooth off/on in Settings. |
 | `Warning: running under Linux/WSL` | Run from a native PowerShell window, not a WSL shell. |
 
+## Clawdio milestones & reactions (macOS)
+
+Clawdio reacts to your work and celebrates milestones — no decay, death, or
+penalties. The daemon counts milestones (day streaks, completed tasks, usage,
+git commits) in `~/.config/claude-usage-monitor/clawdio-state.json` and sends a
+celebration to the device when one unlocks: a festive burst + a toast, then
+Clawdio holds a proud state for 30–60 min with a trophy badge in the corner.
+**Tap the badge to replay the celebration** (positive feedback — you never miss a
+streak you weren't watching). Reactions: a small dance when a task finishes, a
+happy wink when you approve from the device, surprise on a risky command.
+
+Commit milestones detect `git commit` in Bash commands — no extra setup beyond
+the notification hooks below being installed.
+
 ## Session event notifications (macOS)
 
 Clawdmeter can show a banner when a Claude Code session is waiting for your
