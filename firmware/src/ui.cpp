@@ -451,12 +451,28 @@ static void card_finish(const char* decision) {
     card_hide_at = 0;
     card_visible = false;
     imu_hal_lock_rotation(false);   // resume auto-rotation
+    if (strcmp(decision, "approve") == 0) {
+        // Type "1" (approve once) into whatever terminal has OS focus.
+        ble_keyboard_press(0x1E, 0);   // HID usage 0x1E = '1'
+        ble_keyboard_release();
+    }
     if (card_id[0]) {
-        ble_send_decision(card_id, decision);
+        ble_send_decision(card_id, decision);   // tells the daemon to advance the queue
         card_id[0] = '\0';
     }
     splash_unpin_anim();
-    confirm_flash(decision);        // visual confirmation of what was pressed
+    confirm_flash(decision);        // green "Aprobado" = keystroke-sent feedback
+}
+
+// Daemon-initiated clear (prompt resolved in the terminal, or timed out at 60s).
+void ui_hide_approval(void) {
+    if (!card_visible) return;
+    if (card) lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
+    card_hide_at = 0;
+    card_visible = false;
+    card_id[0] = '\0';
+    imu_hal_lock_rotation(false);
+    splash_unpin_anim();
 }
 
 static void card_ensure(void) {

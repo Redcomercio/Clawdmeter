@@ -397,7 +397,10 @@ void loop() {
 
     if (ble_has_data()) {
         const char* raw = ble_get_data();
-        if (strstr(raw, "\"ask\"") != nullptr) {
+        if (strstr(raw, "clear-ask") != nullptr) {
+            ui_hide_approval();          // daemon cleared the card (terminal/timeout)
+            ble_send_ack();
+        } else if (strstr(raw, "\"ask\"") != nullptr) {
             if (parse_approval_json(raw, &approval_req)) {
                 ui_show_approval(&approval_req);
                 ble_send_ack();
