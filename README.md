@@ -231,14 +231,21 @@ Code so it reloads settings. The daemon picks up events within ~1 second.
 
 With the daemon connected, a `PreToolUse` hook **mirrors** tool-permission prompts
 on the device. The prompt always appears in the **terminal** as usual; Clawdmeter
-also shows an approval card (project / tool / command). You answer in either place:
+also shows an approval card (project / tool / command). The card mirrors the
+prompt's options and the buttons **type the matching key** into the focused
+terminal over BLE-HID:
 
-- **Upper button (Continuar)** → the device **types `1` into the focused terminal**
-  over BLE-HID (approve once); a green **Aprobado** flash confirms the keystroke.
-- **Lower button (Terminal)** → just dismisses the device card; you answer in the
-  terminal yourself.
-- An abandoned card (e.g. you closed the terminal) clears itself after **60 s**, or
-  when that session resolves the prompt.
+- **Bash and most tools (2 options — Yes/No):** top button → `1` (Sí), bottom → `2` (No).
+- **Edit/Write/MultiEdit/NotebookEdit (3 options — Yes / Yes-allow-all / No):**
+  top → `1` (Sí), **middle/PWR → `2`** (Sí, allow all), bottom → `3` (No).
+
+A flash confirms what was sent (green Sí / "Permitir todo", red No). You can also
+just answer in the terminal — an unanswered card clears after **60 s** or when that
+session resolves the prompt. (Note: the "allow all" option `2` is reported flaky in
+some Claude Code versions.)
+
+The hook is **non-blocking**: it returns `ask` immediately so the terminal prompt
+is never delayed; the device is purely a remote keyboard + mirror.
 
 The hook is **non-blocking**: it returns `ask` immediately so the terminal prompt
 is never delayed; the device is purely a remote keyboard + mirror.
