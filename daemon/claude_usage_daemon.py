@@ -430,6 +430,12 @@ async def watch_events(session: "Session", tracker: EventTracker,
                     payload = tracker.feed(obj, now=time.time())
                     if payload is not None:
                         await session.write_payload(payload)
+                    # A prompt resolved in the terminal (tool ran / session moved
+                    # on) clears any mirror card still showing on the device.
+                    if obj.get("ev") in ("activity", "done"):
+                        brk = getattr(session, "_broker", None)
+                        if brk and brk.clear_current():
+                            await session.write_payload({"ev": "clear-ask"})
         except (OSError, BleakError) as e:
             log(f"Event watch error: {e}")
         try:
@@ -452,12 +458,21 @@ def clear_device_ready() -> None:
 
 async def run_broker(session: "Session", broker: ApprovalBroker,
                      stop_event: asyncio.Event) -> None:
-    """Scan the approve dir; send the head request to the device over RX."""
+    """Scan the approve dir; send the head request; expire stale cards at 60s."""
+    sent_at = {"t": 0.0, "id": None}
     while not stop_event.is_set() and session.client.is_connected:
         try:
             payload = broker.scan()
             if payload is not None:
                 await session.write_payload(payload)
+                sent_at = {"t": time.time(), "id": payload["id"]}
+            elif sent_at["id"] and broker.current_id() == sent_at["id"] \
+                    and time.time() - sent_at["t"] > 60:
+                if broker.clear_current():
+                    await session.write_payload({"ev": "clear-ask"})
+                sent_at = {"t": 0.0, "id": None}
+            elif broker.current_id() is None:
+                sent_at = {"t": 0.0, "id": None}
         except (OSError, BleakError) as e:
             log(f"Broker error: {e}")
         try:

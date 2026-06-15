@@ -27,15 +27,27 @@ def test_only_head_is_sent_with_queue_positions(tmp_path):
     assert b.scan() is None
 
 
-def test_decision_writes_res_and_advances(tmp_path):
+def test_decide_drops_request_no_res(tmp_path):
     appdir = tmp_path / "approve"; appdir.mkdir()
     b = ApprovalBroker(appdir)
     write_req(appdir, "a"); write_req(appdir, "b")
     b.scan()  # head = a
     b.decide("a", "approve")
-    assert json.loads((appdir / "a.res").read_text()) == {"d": "approve"}
+    assert not (appdir / "a.res").exists()       # no .res written anymore
+    assert not (appdir / "a.req").exists()        # request dropped
     nxt = b.scan()
-    assert nxt["id"] == "b" and nxt["pos"] == 1 and nxt["total"] == 1
+    assert nxt["id"] == "b"
+
+
+def test_clear_current_drops_head(tmp_path):
+    appdir = tmp_path / "approve"; appdir.mkdir()
+    b = ApprovalBroker(appdir)
+    write_req(appdir, "a")
+    b.scan()
+    assert b.clear_current() == "a"
+    assert not (appdir / "a.req").exists()
+    assert b.current_id() is None
+    assert b.clear_current() is None              # nothing left
 
 
 def test_orphan_request_dropped_when_req_file_vanishes(tmp_path):

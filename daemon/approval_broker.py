@@ -42,15 +42,20 @@ class ApprovalBroker:
                 "pos": 1, "total": len(self._queue)}
 
     def decide(self, rid: str, decision: str) -> None:
-        """Record a swipe decision: write <id>.res and drop it from the queue."""
-        if not (self.appdir / f"{rid}.req").exists():
-            return
-        (self.appdir / f"{rid}.res").write_text(json.dumps({"d": decision}))
-        try:
-            (self.appdir / f"{rid}.req").unlink()
-        except OSError:
-            pass
+        """Drop a decided request (the device self-hides; we just advance)."""
+        (self.appdir / f"{rid}.req").unlink(missing_ok=True)
         if rid in self._queue:
             self._queue.remove(rid)
         if self._head_sent == rid:
             self._head_sent = None
+
+    def clear_current(self) -> str | None:
+        """Drop the current head (terminal-answered / timeout). Returns its id or None."""
+        head = self.current_id()
+        if head is None:
+            return None
+        (self.appdir / f"{head}.req").unlink(missing_ok=True)
+        self._queue.remove(head)
+        if self._head_sent == head:
+            self._head_sent = None
+        return head
