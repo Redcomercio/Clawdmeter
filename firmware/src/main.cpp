@@ -62,6 +62,8 @@ static void my_touch_cb(lv_indev_t* indev, lv_indev_data_t* data) {
     bool pressed;
     touch_hal_read(&x, &y, &pressed);
     const bool raw_pressed = pressed;
+    static int32_t sw_start_y = -1;   // swipe start Y (remapped), -1 = idle
+    static int32_t sw_last_y  = 0;    // last pressed Y (remapped)
 
     if (IDLE_WAKE_ON_TOUCH) {
         static bool touch_was = false;
@@ -104,7 +106,20 @@ static void my_touch_cb(lv_indev_t* indev, lv_indev_data_t* data) {
         data->point.x = rx;
         data->point.y = ry;
         data->state = LV_INDEV_STATE_PRESSED;
+        if (sw_start_y < 0) { sw_start_y = ry; }   // swipe start
+        sw_last_y = ry;
     } else {
+        // Swipe gesture on release: down-from-top opens the notification center,
+        // up closes it. Uses the remapped point, so it works at any rotation.
+        if (sw_start_y >= 0) {
+            const int32_t S = board_caps().width;
+            int32_t dy = sw_last_y - sw_start_y;
+            if (sw_start_y < S / 5 && dy > S / 3 && !ui_notif_visible())
+                ui_notif_show();
+            else if (ui_notif_visible() && dy < -(S / 3))
+                ui_notif_hide();
+            sw_start_y = -1;
+        }
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }
