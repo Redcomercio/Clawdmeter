@@ -172,6 +172,24 @@ static bool parse_milestone_json(const char* json, Milestone* out) {
     return true;
 }
 
+static NotifItem notif_buf[NOTIF_MAX];
+
+// Parse an {"ev":"notif","items":[...]} payload and push it to the UI.
+static void handle_notif_json(const char* json) {
+    JsonDocument doc;
+    if (deserializeJson(doc, json)) return;
+    JsonArray arr = doc["items"].as<JsonArray>();
+    uint8_t n = 0;
+    for (JsonObject it : arr) {
+        if (n >= NOTIF_MAX) break;
+        strlcpy(notif_buf[n].id,   it["id"]   | "", sizeof(notif_buf[n].id));
+        strlcpy(notif_buf[n].proj, it["proj"] | "", sizeof(notif_buf[n].proj));
+        strlcpy(notif_buf[n].tool, it["tool"] | "", sizeof(notif_buf[n].tool));
+        n++;
+    }
+    ui_notif_set_list(notif_buf, n);
+}
+
 // ---- Serial command buffer ----
 #define CMD_BUF_SIZE 64
 static char cmd_buf[CMD_BUF_SIZE];
@@ -445,6 +463,9 @@ void loop() {
             } else {
                 ble_send_nack();
             }
+        } else if (strstr(raw, "\"notif\"") != nullptr) {
+            handle_notif_json(raw);
+            ble_send_ack();
         } else if (strstr(raw, "\"ev\"") != nullptr) {
             if (parse_event_json(raw, &session_event)) {
                 ui_show_event(&session_event);

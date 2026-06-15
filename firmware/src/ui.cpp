@@ -518,11 +518,6 @@ static void mile_burst(void) {
     mile_proud_until = lv_tick_get() + (uint32_t)random(1800000, 3600001);
 }
 
-static void mile_badge_tap_cb(lv_event_t* e) {
-    LV_UNUSED(e);
-    if (mile_label[0]) mile_burst();   // replay celebration on demand
-}
-
 static void mile_ensure(void) {
     if (mile_toast) return;
     const BoardCaps& c = board_caps();
@@ -550,8 +545,8 @@ static void mile_ensure(void) {
     lv_obj_set_style_border_width(mile_badge, 0, 0);
     lv_obj_set_style_bg_color(mile_badge, lv_color_hex(0x7a5cff), 0);
     lv_obj_clear_flag(mile_badge, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(mile_badge, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(mile_badge, mile_badge_tap_cb, LV_EVENT_CLICKED, nullptr);
+    // Badge is purely visual; replay is via the PWR button (touch is unreliable
+    // when the display is rotated — see ui_milestone_replay).
     mile_badge_lbl = lv_label_create(mile_badge);
     lv_obj_set_style_text_font(mile_badge_lbl, &font_styrene_28, 0);
     lv_obj_set_style_text_color(mile_badge_lbl, lv_color_white(), 0);
@@ -582,6 +577,137 @@ void ui_milestone_tick(void) {
         mile_proud_until = 0;
         if (mile_badge) lv_obj_add_flag(mile_badge, LV_OBJ_FLAG_HIDDEN);  // badge decays
     }
+}
+
+// PWR button while a milestone badge is up → replay the festive burst.
+// Returns true if it consumed the press (so the caller skips normal PWR action).
+bool ui_milestone_replay(void) {
+    if (mile_proud_until == 0 || !mile_label[0]) return false;  // no active celebration
+    mile_burst();
+    return true;
+}
+
+// ---- Notification center: full-screen list of stuck/active items ----
+static lv_obj_t* notif_panel = nullptr;
+static lv_obj_t* notif_list = nullptr;   // scrollable container of rows
+static lv_obj_t* notif_empty = nullptr;
+static NotifItem notif_items[NOTIF_MAX];
+static uint8_t   notif_count = 0;
+
+static void notif_x_cb(lv_event_t* e) {
+    const char* id = (const char*)lv_event_get_user_data(e);
+    if (id && id[0]) ble_send_decision(id, "clear");  // daemon drops it; no keystroke
+    lv_obj_t* row = (lv_obj_t*)lv_obj_get_parent(lv_event_get_target_obj(e));
+    if (row) lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void notif_close_cb(lv_event_t* e) { LV_UNUSED(e); ui_notif_hide(); }
+
+static void notif_ensure(void) {
+    if (notif_panel) return;
+    const BoardCaps& c = board_caps();
+    notif_panel = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(notif_panel, c.width, c.height);
+    lv_obj_align(notif_panel, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(notif_panel, 0, 0);
+    lv_obj_set_style_border_width(notif_panel, 0, 0);
+    lv_obj_set_style_bg_color(notif_panel, lv_color_hex(0x14141c), 0);
+    lv_obj_set_style_pad_all(notif_panel, 12, 0);
+    lv_obj_clear_flag(notif_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* title = lv_label_create(notif_panel);
+    lv_obj_set_style_text_font(title, &font_styrene_28, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_label_set_text(title, "Notificaciones");
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+
+    notif_empty = lv_label_create(notif_panel);
+    lv_obj_set_style_text_font(notif_empty, &font_styrene_20, 0);
+    lv_obj_set_style_text_color(notif_empty, lv_color_hex(0x8a8a92), 0);
+    lv_label_set_text(notif_empty, "Sin notificaciones");
+    lv_obj_center(notif_empty);
+
+    notif_list = lv_obj_create(notif_panel);
+    lv_obj_set_size(notif_list, c.width - 24, c.height - 130);
+    lv_obj_align(notif_list, LV_ALIGN_TOP_MID, 0, 44);
+    lv_obj_set_style_bg_opa(notif_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(notif_list, 0, 0);
+    lv_obj_set_flex_flow(notif_list, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t* close = lv_obj_create(notif_panel);
+    lv_obj_set_size(close, c.width - 80, 52);
+    lv_obj_align(close, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_radius(close, 12, 0);
+    lv_obj_set_style_bg_color(close, lv_color_hex(0x3a3a44), 0);
+    lv_obj_add_event_cb(close, notif_close_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* close_lbl = lv_label_create(close);
+    lv_obj_set_style_text_font(close_lbl, &font_styrene_20, 0);
+    lv_obj_set_style_text_color(close_lbl, lv_color_white(), 0);
+    lv_label_set_text(close_lbl, "Cerrar");
+    lv_obj_center(close_lbl);
+
+    lv_obj_add_flag(notif_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void notif_render(void) {
+    notif_ensure();
+    lv_obj_clean(notif_list);                       // drop old rows
+    if (notif_count == 0) lv_obj_clear_flag(notif_empty, LV_OBJ_FLAG_HIDDEN);
+    else                  lv_obj_add_flag(notif_empty, LV_OBJ_FLAG_HIDDEN);
+    const BoardCaps& c = board_caps();
+    for (uint8_t i = 0; i < notif_count; i++) {
+        lv_obj_t* row = lv_obj_create(notif_list);
+        lv_obj_set_size(row, c.width - 32, 60);
+        lv_obj_set_style_radius(row, 10, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0x202028), 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t* txt = lv_label_create(row);
+        lv_obj_set_style_text_font(txt, &font_styrene_20, 0);
+        lv_obj_set_style_text_color(txt, lv_color_white(), 0);
+        lv_label_set_long_mode(txt, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(txt, c.width - 120);
+        char line[44];
+        snprintf(line, sizeof(line), "%s \xC2\xB7 %s", notif_items[i].proj, notif_items[i].tool);
+        lv_label_set_text(txt, line);
+        lv_obj_align(txt, LV_ALIGN_LEFT_MID, 4, 0);
+
+        lv_obj_t* x = lv_obj_create(row);
+        lv_obj_set_size(x, 44, 44);
+        lv_obj_set_style_radius(x, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(x, 0, 0);
+        lv_obj_set_style_bg_color(x, lv_color_hex(0xB23b3b), 0);
+        lv_obj_align(x, LV_ALIGN_RIGHT_MID, -4, 0);
+        lv_obj_add_event_cb(x, notif_x_cb, LV_EVENT_CLICKED, (void*)notif_items[i].id);
+        lv_obj_t* xl = lv_label_create(x);
+        lv_obj_set_style_text_font(xl, &font_styrene_20, 0);
+        lv_obj_set_style_text_color(xl, lv_color_white(), 0);
+        lv_label_set_text(xl, LV_SYMBOL_CLOSE);
+        lv_obj_center(xl);
+    }
+}
+
+void ui_notif_set_list(const NotifItem* items, uint8_t count) {
+    if (count > NOTIF_MAX) count = NOTIF_MAX;
+    notif_count = count;
+    for (uint8_t i = 0; i < count; i++) notif_items[i] = items[i];
+    if (ui_notif_visible()) notif_render();
+}
+
+void ui_notif_show(void) {
+    notif_ensure();
+    notif_render();
+    lv_obj_clear_flag(notif_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(notif_panel);
+}
+
+void ui_notif_hide(void) {
+    if (notif_panel) lv_obj_add_flag(notif_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+bool ui_notif_visible(void) {
+    return notif_panel && !lv_obj_has_flag(notif_panel, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void card_ensure(void) {
