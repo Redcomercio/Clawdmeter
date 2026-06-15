@@ -407,8 +407,13 @@ def parse_event_line(line: str) -> dict | None:
 
 async def watch_events(session: "Session", tracker: EventTracker,
                        watch_pos: dict, stop_event: asyncio.Event) -> None:
-    """Tail EVENT_FILE; push tracker payloads to the device as events arrive."""
+    """Tail EVENT_FILE; push tracker payloads to the device as events arrive.
+
+    Also refreshes the device-ready flag every tick (~1s) so the PreToolUse hook
+    (which treats it as fresh for 10s) reliably sees the device as connected —
+    the 60s usage poll alone would let it go stale between polls."""
     while not stop_event.is_set() and session.client.is_connected:
+        touch_device_ready()
         try:
             size = EVENT_FILE.stat().st_size if EVENT_FILE.exists() else 0
             if size < watch_pos["pos"]:
