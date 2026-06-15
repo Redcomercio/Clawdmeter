@@ -39,3 +39,7 @@ void splash_pin_anim(const char* name);
 
 // Release the pin and resume normal rate-driven rotation.
 void splash_unpin_anim(void);
+
+// Pin an animation for `ms` milliseconds, then auto-release back to rotation.
+// Used for momentary reactions / celebration bursts. Needs splash_tick() running.
+void splash_pin_anim_for(const char* name, uint32_t ms);

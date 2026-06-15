@@ -146,6 +146,18 @@ static bool parse_approval_json(const char* json, ApprovalRequest* out) {
     return true;
 }
 
+static Milestone milestone = {};
+
+// Parse an {"ev":"milestone",...} payload.
+static bool parse_milestone_json(const char* json, Milestone* out) {
+    JsonDocument doc;
+    if (deserializeJson(doc, json)) return false;
+    strlcpy(out->label, doc["label"] | "", sizeof(out->label));
+    strlcpy(out->anim,  doc["anim"]  | "dance bounce", sizeof(out->anim));
+    out->fresh = true;
+    return true;
+}
+
 // ---- Serial command buffer ----
 #define CMD_BUF_SIZE 64
 static char cmd_buf[CMD_BUF_SIZE];
@@ -403,6 +415,13 @@ void loop() {
         } else if (strstr(raw, "\"ask\"") != nullptr) {
             if (parse_approval_json(raw, &approval_req)) {
                 ui_show_approval(&approval_req);
+                ble_send_ack();
+            } else {
+                ble_send_nack();
+            }
+        } else if (strstr(raw, "milestone") != nullptr) {
+            if (parse_milestone_json(raw, &milestone)) {
+                ui_show_milestone(&milestone);
                 ble_send_ack();
             } else {
                 ble_send_nack();

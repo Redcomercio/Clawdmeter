@@ -27,6 +27,7 @@ static uint16_t *canvas_buf = NULL;        // 480x480 RGB565 (PSRAM)
 
 static uint16_t cur_anim = 0;
 static int      pinned_anim = -1;   // >=0 locks the creature to this animation
+static uint32_t pin_until_ms = 0;   // 0 = indefinite/none; else auto-unpin time
 static uint16_t cur_frame = 0;
 static uint32_t frame_started_ms = 0;
 static uint32_t last_pick_ms = 0;
@@ -173,6 +174,12 @@ void splash_init(lv_obj_t *parent) {
 void splash_tick(void) {
     if (!active || SPLASH_ANIM_COUNT == 0) return;
 
+    // Timed pin expired → release back to normal rotation.
+    if (pin_until_ms != 0 && millis() >= pin_until_ms) {
+        pin_until_ms = 0;
+        splash_unpin_anim();
+    }
+
     // Auto-rotate to the next animation in the current group — unless the
     // creature is pinned to a state animation (e.g. approval pending).
     if (pinned_anim < 0 && millis() - last_pick_ms >= SPLASH_ROTATE_INTERVAL_MS) {
@@ -267,8 +274,14 @@ void splash_pin_anim(const char* name) {
     }
 }
 
+void splash_pin_anim_for(const char* name, uint32_t ms) {
+    splash_pin_anim(name);
+    pin_until_ms = millis() + ms;
+}
+
 void splash_unpin_anim(void) {
     if (pinned_anim < 0) return;
     pinned_anim = -1;
+    pin_until_ms = 0;
     if (active) splash_pick_for_current_rate();  // resume normal rotation
 }

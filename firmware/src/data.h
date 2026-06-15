@@ -27,3 +27,9 @@ struct ApprovalRequest {
     uint8_t total;   // queue length
     bool fresh;
 };
+
+struct Milestone {
+    char label[40];  // e.g. "🔥 7 días seguidos"
+    char anim[20];   // festive animation name
+    bool fresh;
+};
