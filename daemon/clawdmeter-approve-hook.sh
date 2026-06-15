@@ -10,10 +10,8 @@ cfg="${CLAWDMETER_CONFIG_DIR:-$HOME/.config/claude-usage-monitor}"
 ready="$cfg/device-ready"
 appdir="$cfg/approve"
 fresh_secs=10
-timeout="${CLAWDMETER_APPROVE_TIMEOUT:-30}"
 
-emit_ask()   { printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"}}\n'; exit 0; }
-emit_allow() { printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n'; exit 0; }
+emit_ask() { printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"}}\n'; exit 0; }
 
 # Gate: device must be connected (flag present and fresh).
 [ -f "$ready" ] || emit_ask
@@ -48,22 +46,9 @@ proj=$(basename "$cwd" 2>/dev/null); [ -z "$proj" ] && proj="?"
 id="${sid}-$(date +%s)-$$"
 
 mkdir -p "$appdir" 2>/dev/null
-req="$appdir/$id.req"
-res="$appdir/$id.res"
 printf '{"id":"%s","sid":"%s","proj":"%s","tool":"%s","cmd":"%s"}\n' \
-    "$id" "$sid" "$proj" "$tool" "${cmd//\"/\'}" > "$req"
+    "$id" "$sid" "$proj" "$tool" "${cmd//\"/\'}" > "$appdir/$id.req" 2>/dev/null
 
-# Poll for the decision; clean up on every exit path.
-trap 'rm -f "$req" "$res"' EXIT
-start=$now
-while :; do
-    if [ -f "$res" ]; then
-        d=$(cat "$res")
-        case "$d" in
-            *'"approve"'*) emit_allow ;;
-            *) emit_ask ;;
-        esac
-    fi
-    [ $(( $(date +%s) - start )) -ge "$timeout" ] && emit_ask
-    sleep 0.3
-done
+# Non-blocking: the terminal prompt shows now; the device card just mirrors it and
+# (on approve) types the answer via HID. The hook never decides — always "ask".
+emit_ask

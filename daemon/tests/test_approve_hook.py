@@ -1,4 +1,4 @@
-import json, subprocess, threading, time
+import json, subprocess, time
 from pathlib import Path
 
 HOOK = Path(__file__).resolve().parents[1] / "clawdmeter-approve-hook.sh"
@@ -12,82 +12,45 @@ def run_hook(stdin_obj, cfg_dir, env_extra=None):
                           capture_output=True, text=True, env=env)
 
 
-def test_no_device_ready_returns_ask(tmp_path):
+def reqs(cfg_dir):
+    d = cfg_dir / "approve"
+    return list(d.glob("*.req")) if d.exists() else []
+
+
+def test_no_device_ready_returns_ask_no_req(tmp_path):
     r = run_hook({"session_id": "s", "cwd": "/x/proj", "tool_name": "Bash",
                   "tool_input": {"command": "ls"}}, tmp_path)
-    out = json.loads(r.stdout)
-    assert out["hookSpecificOutput"]["permissionDecision"] == "ask"
-    assert r.returncode == 0
-
-
-def test_non_action_tool_returns_ask_instantly_even_when_connected(tmp_path):
-    # device-ready fresh: a Bash WOULD engage the device — but AskUserQuestion
-    # (and other non-action tools) must return ask instantly, never blocking.
-    (tmp_path / "device-ready").write_text("")
-    (tmp_path / "approve").mkdir()
-    start = time.time()
-    r = run_hook({"session_id": "s", "cwd": "/x/proj", "tool_name": "AskUserQuestion",
-                  "tool_input": {}}, tmp_path,
-                 env_extra={"CLAWDMETER_APPROVE_TIMEOUT": "30"})
     assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "ask"
-    assert time.time() - start < 5          # did not block on the device
-    assert not list((tmp_path / "approve").glob("*.req"))  # no request written
+    assert reqs(tmp_path) == []
 
 
-def test_stale_device_ready_returns_ask(tmp_path):
-    ready = tmp_path / "device-ready"
-    ready.write_text("")
+def test_action_tool_writes_req_and_returns_ask_immediately(tmp_path):
+    (tmp_path / "device-ready").write_text("")
+    start = time.time()
+    r = run_hook({"session_id": "s", "cwd": "/x/proj", "tool_name": "Bash",
+                  "tool_input": {"command": "git push"}}, tmp_path)
+    assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "ask"
+    assert time.time() - start < 3                 # non-blocking
+    rs = reqs(tmp_path)
+    assert len(rs) == 1
+    body = json.loads(rs[0].read_text())
+    assert body["tool"] == "Bash" and body["proj"] == "proj"
+
+
+def test_non_action_tool_returns_ask_no_req(tmp_path):
+    (tmp_path / "device-ready").write_text("")
+    r = run_hook({"session_id": "s", "cwd": "/x/proj", "tool_name": "AskUserQuestion",
+                  "tool_input": {}}, tmp_path)
+    assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "ask"
+    assert reqs(tmp_path) == []
+
+
+def test_stale_device_ready_returns_ask_no_req(tmp_path):
+    ready = tmp_path / "device-ready"; ready.write_text("")
     import os
     old = time.time() - 30
     os.utime(ready, (old, old))
     r = run_hook({"session_id": "s", "cwd": "/x/proj", "tool_name": "Bash",
                   "tool_input": {"command": "ls"}}, tmp_path)
     assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "ask"
-
-
-def test_approve_decision_returns_allow(tmp_path):
-    (tmp_path / "device-ready").write_text("")
-    (tmp_path / "approve").mkdir()
-
-    def responder():
-        for _ in range(100):
-            reqs = list((tmp_path / "approve").glob("*.req"))
-            if reqs:
-                rid = reqs[0].stem
-                (tmp_path / "approve" / f"{rid}.res").write_text('{"d":"approve"}')
-                return
-            time.sleep(0.05)
-
-    t = threading.Thread(target=responder); t.start()
-    r = run_hook({"session_id": "s", "cwd": "/x/proj", "tool_name": "Bash",
-                  "tool_input": {"command": "git push"}}, tmp_path)
-    t.join()
-    assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "allow"
-
-
-def test_dismiss_decision_returns_ask(tmp_path):
-    (tmp_path / "device-ready").write_text("")
-    (tmp_path / "approve").mkdir()
-
-    def responder():
-        for _ in range(100):
-            reqs = list((tmp_path / "approve").glob("*.req"))
-            if reqs:
-                (tmp_path / "approve" / f"{reqs[0].stem}.res").write_text('{"d":"dismiss"}')
-                return
-            time.sleep(0.05)
-
-    t = threading.Thread(target=responder); t.start()
-    r = run_hook({"session_id": "s", "cwd": "/x/proj", "tool_name": "Bash",
-                  "tool_input": {"command": "rm x"}}, tmp_path)
-    t.join()
-    assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "ask"
-
-
-def test_timeout_returns_ask(tmp_path):
-    (tmp_path / "device-ready").write_text("")
-    (tmp_path / "approve").mkdir()
-    r = run_hook({"session_id": "s", "cwd": "/x/proj", "tool_name": "Bash",
-                  "tool_input": {"command": "ls"}}, tmp_path,
-                 env_extra={"CLAWDMETER_APPROVE_TIMEOUT": "1"})
-    assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "ask"
+    assert reqs(tmp_path) == []
