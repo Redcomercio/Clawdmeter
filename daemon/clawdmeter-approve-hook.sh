@@ -33,6 +33,15 @@ else
     tool=$(printf '%s' "$payload" | grep -o '"tool_name"[^,]*'  | head -1 | sed 's/.*:"//;s/"//')
     cmd=""
 fi
+
+# Only engage the device for action tools that genuinely gate on permission.
+# Everything else (AskUserQuestion, Read, Grep, Glob, TodoWrite, …) returns ask
+# instantly so it never blocks the terminal on a device button press.
+case "$tool" in
+    Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__*) ;;  # → engage device
+    *) emit_ask ;;                                     # → terminal, instant
+esac
+
 proj=$(basename "$cwd" 2>/dev/null); [ -z "$proj" ] && proj="?"
 # macOS `date` has no %N (nanoseconds); use epoch seconds + this hook's PID,
 # unique per invocation, to avoid id collisions within the same second.

@@ -232,13 +232,20 @@ Add the `PreToolUse` hook to `~/.claude/settings.json` (merge into `hooks`):
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": "", "hooks": [
+      { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*", "hooks": [
         { "type": "command", "timeout": 35,
           "command": "/ABS/PATH/Clawdmeter/daemon/clawdmeter-approve-hook.sh" } ] }
     ]
   }
 }
 ```
+
+**Use a scoped `matcher`** (above) so the hook only fires for action tools. Do NOT
+register it with `"matcher": ""` — that fires the hook for *every* tool (including
+`AskUserQuestion`, `Read`, etc.), and the device would intercept things like
+multiple-choice questions, blocking the terminal. As a safety net the hook script
+itself also returns `ask` instantly for any non-action tool, but the matcher avoids
+firing it at all.
 
 The hook only blocks while the device is connected (it checks a `device-ready`
 flag the daemon refreshes); otherwise it returns instantly and tool permissions

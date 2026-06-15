@@ -20,6 +20,20 @@ def test_no_device_ready_returns_ask(tmp_path):
     assert r.returncode == 0
 
 
+def test_non_action_tool_returns_ask_instantly_even_when_connected(tmp_path):
+    # device-ready fresh: a Bash WOULD engage the device — but AskUserQuestion
+    # (and other non-action tools) must return ask instantly, never blocking.
+    (tmp_path / "device-ready").write_text("")
+    (tmp_path / "approve").mkdir()
+    start = time.time()
+    r = run_hook({"session_id": "s", "cwd": "/x/proj", "tool_name": "AskUserQuestion",
+                  "tool_input": {}}, tmp_path,
+                 env_extra={"CLAWDMETER_APPROVE_TIMEOUT": "30"})
+    assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "ask"
+    assert time.time() - start < 5          # did not block on the device
+    assert not list((tmp_path / "approve").glob("*.req"))  # no request written
+
+
 def test_stale_device_ready_returns_ask(tmp_path):
     ready = tmp_path / "device-ready"
     ready.write_text("")
