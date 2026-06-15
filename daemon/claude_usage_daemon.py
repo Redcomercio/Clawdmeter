@@ -22,6 +22,7 @@ from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
 
 from approval_broker import ApprovalBroker
+from milestone_engine import MilestoneEngine
 
 DEVICE_NAME = "Clawdmeter"
 SERVICE_UUID = "4c41555a-4465-7669-6365-000000000001"
@@ -44,6 +45,7 @@ EVENT_TICK = 1.0  # seconds between event-file size checks
 DEVICE_READY_FILE = Path.home() / ".config" / "claude-usage-monitor" / "device-ready"
 APPROVE_DIR = Path.home() / ".config" / "claude-usage-monitor" / "approve"
 APPROVE_TICK = 0.3  # seconds between approve-dir scans
+CLAWDIO_STATE_FILE = Path.home() / ".config" / "claude-usage-monitor" / "clawdio-state.json"
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_HEADERS_TEMPLATE = {
@@ -406,7 +408,7 @@ def parse_event_line(line: str) -> dict | None:
 
 
 async def watch_events(session: "Session", tracker: EventTracker,
-                       watch_pos: dict, stop_event: asyncio.Event) -> None:
+                       watch_pos: dict, stop_event: asyncio.Event, engine) -> None:
     """Tail EVENT_FILE; push tracker payloads to the device as events arrive.
 
     Also refreshes the device-ready flag every tick (~1s) so the PreToolUse hook
@@ -430,6 +432,12 @@ async def watch_events(session: "Session", tracker: EventTracker,
                     payload = tracker.feed(obj, now=time.time())
                     if payload is not None:
                         await session.write_payload(payload)
+                    # Milestone progress (streaks/tasks/commits) from this event.
+                    for m in engine.feed_event(obj, _local_today()):
+                        save_clawdio_state(engine.state)
+                        await session.write_payload(
+                            {"ev": "milestone", "id": m["id"],
+                             "label": m["label"], "anim": m["anim"]})
                     # A prompt resolved in the terminal (tool ran / session moved
                     # on) clears any mirror card still showing on the device.
                     if obj.get("ev") in ("activity", "done"):
@@ -454,6 +462,27 @@ def touch_device_ready() -> None:
 
 def clear_device_ready() -> None:
     DEVICE_READY_FILE.unlink(missing_ok=True)
+
+
+def load_clawdio_state() -> dict | None:
+    try:
+        return json.loads(CLAWDIO_STATE_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def save_clawdio_state(state: dict) -> None:
+    try:
+        CLAWDIO_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CLAWDIO_STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state))
+        tmp.replace(CLAWDIO_STATE_FILE)   # atomic
+    except OSError as e:
+        log(f"Could not save clawdio state: {e}")
+
+
+def _local_today() -> str:
+    return time.strftime("%Y-%m-%d")
 
 
 async def run_broker(session: "Session", broker: ApprovalBroker,
@@ -527,7 +556,7 @@ class Session:
 
 
 async def connect_and_run(target, stop_event: asyncio.Event,
-                          tracker: EventTracker, watch_pos: dict) -> bool:
+                          tracker: EventTracker, watch_pos: dict, engine) -> bool:
     """Connect to a target and poll until disconnected or stopped.
 
     ``target`` is either an address string (Linux) or a BLEDevice carrying
@@ -578,6 +607,15 @@ async def connect_and_run(target, stop_event: asyncio.Event,
                         last_poll = time.time()
                         used["ok"] = True
                         touch_device_ready()
+                        try:
+                            pct = float(payload.get("s", 0))
+                        except (TypeError, ValueError):
+                            pct = 0.0
+                        for m in engine.feed_usage(pct, _local_today()):
+                            save_clawdio_state(engine.state)
+                            await session.write_payload(
+                                {"ev": "milestone", "id": m["id"],
+                                 "label": m["label"], "anim": m["anim"]})
             try:
                 await asyncio.wait_for(session.refresh_requested.wait(), timeout=TICK)
             except asyncio.TimeoutError:
@@ -585,7 +623,7 @@ async def connect_and_run(target, stop_event: asyncio.Event,
 
     poll_task = asyncio.create_task(poll_loop())
     watch_task = asyncio.create_task(
-        watch_events(session, tracker, watch_pos, stop_event))
+        watch_events(session, tracker, watch_pos, stop_event, engine))
     broker_task = asyncio.create_task(run_broker(session, broker, stop_event))
     try:
         done, pending = await asyncio.wait(
@@ -639,6 +677,7 @@ async def main() -> None:
 
     tracker = EventTracker()
     watch_pos = {"pos": 0}  # persists file read position across reconnects
+    engine = MilestoneEngine(state=load_clawdio_state())
 
     backoff = 1
     skip_addr: str | None = None  # macOS: a peripheral to skip for one cycle
@@ -657,7 +696,7 @@ async def main() -> None:
             continue
 
         addr = target if isinstance(target, str) else target.address
-        ok = await connect_and_run(target, stop_event, tracker, watch_pos)
+        ok = await connect_and_run(target, stop_event, tracker, watch_pos, engine)
         if not ok:
             if sys.platform == "darwin":
                 # No string cache to drop; instead skip this stale handle on

@@ -4,7 +4,15 @@ Pure of BLE/asyncio: the daemon scans periodically, sends scan()'s result to
 the device, and calls decide() when a swipe arrives over BLE.
 """
 import json
+import re
 from pathlib import Path
+
+_DANGER = re.compile(
+    r"rm\s+-rf|--force\b|\s-f\b|mkfs|dd\s+if=|:\(\)\s*\{|>\s*/dev/|sudo\s+rm")
+
+
+def _is_dangerous(cmd: str) -> bool:
+    return bool(cmd and _DANGER.search(cmd))
 
 
 class ApprovalBroker:
@@ -39,7 +47,8 @@ class ApprovalBroker:
         self._head_sent = head
         return {"ev": "ask", "id": head, "proj": req.get("proj", "?"),
                 "tool": req.get("tool", ""), "cmd": req.get("cmd", ""),
-                "pos": 1, "total": len(self._queue)}
+                "pos": 1, "total": len(self._queue),
+                "danger": _is_dangerous(req.get("cmd", ""))}
 
     def decide(self, rid: str, decision: str) -> None:
         """Drop a decided request (the device self-hides; we just advance)."""
