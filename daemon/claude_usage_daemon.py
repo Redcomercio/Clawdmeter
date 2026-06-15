@@ -340,8 +340,11 @@ class EventTracker:
         self._sessions: dict[str, dict] = {}
 
     def _evict(self, now: float) -> None:
+        # Never evict a PENDING session by time — pending notifications persist
+        # until resolved in the terminal (activity/done) or deleted from the
+        # notification center. Only reap stale non-pending entries.
         stale = [sid for sid, s in self._sessions.items()
-                 if now - s["ts"] > EVICT_SECONDS]
+                 if not s["pending"] and now - s["ts"] > EVICT_SECONDS]
         for sid in stale:
             del self._sessions[sid]
 
@@ -515,21 +518,14 @@ def _local_today() -> str:
 
 async def run_broker(session: "Session", broker: ApprovalBroker,
                      stop_event: asyncio.Event) -> None:
-    """Scan the approve dir; send the head request; expire stale cards at 60s."""
-    sent_at = {"t": 0.0, "id": None}
+    """Scan the approve dir; send the head request to the device. Cards are NOT
+    expired by time — they clear only on a button decision or when the session
+    resolves the prompt (activity/done)."""
     while not stop_event.is_set() and session.client.is_connected:
         try:
             payload = broker.scan()
             if payload is not None:
                 await session.write_payload(payload)
-                sent_at = {"t": time.time(), "id": payload["id"]}
-            elif sent_at["id"] and broker.current_id() == sent_at["id"] \
-                    and time.time() - sent_at["t"] > 60:
-                if broker.clear_current():
-                    await session.write_payload({"ev": "clear-ask"})
-                sent_at = {"t": 0.0, "id": None}
-            elif broker.current_id() is None:
-                sent_at = {"t": 0.0, "id": None}
         except (OSError, BleakError) as e:
             log(f"Broker error: {e}")
         try:

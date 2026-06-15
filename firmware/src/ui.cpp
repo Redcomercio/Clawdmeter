@@ -403,7 +403,6 @@ static lv_obj_t* card_yes_lbl = nullptr;  // top    → key '1' (Yes once)
 static lv_obj_t* card_mid_lbl = nullptr;  // middle → key '2' (Yes allow all; 3-opt only)
 static lv_obj_t* card_no_lbl  = nullptr;  // bottom → key '2'(2-opt) / '3'(3-opt) (No)
 static char      card_id[40] = {0};
-static uint32_t  card_hide_at = 0;     // lv_tick when the 30s timeout fires
 static bool      card_visible = false;
 static uint8_t   card_quadrant = 0;    // rotation quadrant frozen at show time
 static uint8_t   card_opts = 2;        // 2 (Yes/No) or 3 (Yes/Yes-all/No)
@@ -457,22 +456,11 @@ static void confirm_flash_digit(uint8_t digit) {
     confirm_hide_at = lv_tick_get() + 1500;
 }
 
-// Hide the card + release pins, without typing anything (timeout / daemon clear).
-static void card_dismiss_silent(void) {
-    if (card) lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
-    card_hide_at = 0;
-    card_visible = false;
-    card_id[0] = '\0';
-    imu_hal_lock_rotation(false);
-    splash_unpin_anim();
-}
-
 // A button answered the prompt: type the digit (1/2/3) into the focused terminal,
 // tell the daemon to advance the queue, flash feedback.
 static void card_answer(uint8_t digit) {
     if (!card_visible) return;
     if (card) lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
-    card_hide_at = 0;
     card_visible = false;
     imu_hal_lock_rotation(false);
     uint8_t key = (digit == 1) ? 0x1E : (digit == 2) ? 0x1F : 0x20;  // '1'/'2'/'3'
@@ -487,11 +475,10 @@ static void card_answer(uint8_t digit) {
     confirm_flash_digit(digit);
 }
 
-// Daemon-initiated clear (prompt resolved in the terminal, or timed out at 60s).
+// Daemon-initiated clear (the prompt was resolved in the terminal).
 void ui_hide_approval(void) {
     if (!card_visible) return;
     if (card) lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
-    card_hide_at = 0;
     card_visible = false;
     card_id[0] = '\0';
     imu_hal_lock_rotation(false);
@@ -788,7 +775,6 @@ void ui_show_approval(const ApprovalRequest* req) {
     if (card_opts == 3) lv_obj_clear_flag(card_mid_lbl, LV_OBJ_FLAG_HIDDEN);
     else                lv_obj_add_flag(card_mid_lbl, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_HIDDEN);
-    card_hide_at = lv_tick_get() + 30000;  // auto-dismiss in 30s
     card_visible = true;
     card_quadrant = imu_hal_rotation_quadrant();
     imu_hal_lock_rotation(true);            // freeze so buttons don't remap
@@ -820,9 +806,8 @@ bool ui_approval_middle(void) {
 }
 
 void ui_approval_tick(void) {
-    if (card_hide_at != 0 && lv_tick_get() >= card_hide_at) {
-        card_dismiss_silent();   // timeout: no keystroke, just clear
-    }
+    // Approval cards no longer expire by time — they clear only on a button
+    // decision or a daemon clear-ask (the terminal answered the prompt).
     if (confirm_hide_at != 0 && lv_tick_get() >= confirm_hide_at) {
         if (confirm) lv_obj_add_flag(confirm, LV_OBJ_FLAG_HIDDEN);
         confirm_hide_at = 0;

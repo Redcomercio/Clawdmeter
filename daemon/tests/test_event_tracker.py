@@ -41,11 +41,24 @@ def test_activity_without_pending_returns_none():
     assert t.feed({"sid": "a", "proj": "P", "ev": "activity", "ts": 100}, now=100) is None
 
 
-def test_eviction_after_ten_minutes():
+def test_non_pending_session_evicted_after_ten_minutes():
+    # A resolved (non-pending) session is reaped once stale so it doesn't linger.
+    t = EventTracker()
+    t.feed({"sid": "a", "proj": "P", "ev": "done", "ts": 0}, now=0)
+    t.feed({"sid": "b", "proj": "Q", "ev": "approval", "ts": 660}, now=660)
+    assert "a" not in t._sessions          # stale, non-pending → evicted
+    assert t._sessions["b"]["pending"]      # b survives
+
+
+def test_pending_session_never_evicted_by_time():
+    # A pending notification persists past the 10-min window — it clears only on
+    # terminal resolution (activity/done) or a notification-center delete.
     t = EventTracker()
     t.feed({"sid": "a", "proj": "P", "ev": "approval", "ts": 0}, now=0)
     payload = t.feed({"sid": "b", "proj": "Q", "ev": "done", "ts": 660}, now=660)
-    assert payload == {"ev": "done", "proj": "Q"}
+    # b finishing does not retire a's still-pending approval: banner stays amber.
+    assert payload == {"ev": "approval", "proj": "P", "n": 1}
+    assert "a" in t._sessions and t._sessions["a"]["pending"]
 
 
 def test_current_state_amber_when_pending():
