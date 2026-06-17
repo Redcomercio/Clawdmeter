@@ -379,8 +379,8 @@ void loop() {
     if (!idle_is_asleep()) display_hal_tick();
 
     // ---- Physical buttons ----
-    //   PRIMARY   → HID Space  (Claude Code voice-mode PTT)
-    //   SECONDARY → HID Shift+Tab  (mode toggle; only if the board has one)
+    //   PRIMARY   → HID '1'+Enter  (quick "1. Sí" answer to a prompt)
+    //   SECONDARY → HID Space  (Claude Code voice-mode PTT; only if board has one)
     //   PWR       → on splash: cycle animations; on usage: cycle brightness;
     //               hold ~3s + release: pairing mode
     // First press from sleep is consumed as a wake-only event by
@@ -395,10 +395,14 @@ void loop() {
             if (primary_now) {
                 if (ui_approval_active())      { ui_approval_primary(); primary_wake_swallowed = true; }
                 else if (idle_consume_wake_press()) primary_wake_swallowed = true;
-                else                            ble_keyboard_press(0x2C, 0);  // HID Space, no mods
+                else {
+                    // Quick "1. Sí": type '1' then Enter into the focused terminal.
+                    ble_keyboard_press(0x1E, 0); ble_keyboard_release();  // '1'
+                    ble_keyboard_press(0x28, 0); ble_keyboard_release();  // Enter
+                    primary_wake_swallowed = true;  // one-shot: nothing to do on release
+                }
             } else {
-                if (primary_wake_swallowed) primary_wake_swallowed = false;
-                else                        ble_keyboard_release();
+                primary_wake_swallowed = false;  // release edge: key already released
             }
             primary_was = primary_now;
         }
@@ -411,7 +415,7 @@ void loop() {
                 if (secondary_now) {
                     if (ui_approval_active())      { ui_approval_secondary(); secondary_wake_swallowed = true; }
                     else if (idle_consume_wake_press()) secondary_wake_swallowed = true;
-                    else                            ble_keyboard_press(0x2B, 0x02);  // HID Tab + LEFT_SHIFT
+                    else                            ble_keyboard_press(0x2C, 0);  // HID Space (voice PTT, hold)
                 } else {
                     if (secondary_wake_swallowed) secondary_wake_swallowed = false;
                     else                          ble_keyboard_release();
